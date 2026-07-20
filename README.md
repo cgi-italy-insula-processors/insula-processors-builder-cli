@@ -36,7 +36,7 @@ Log in once via GitHub device flow (no PAT to create):
 insula-processors-builder login
 ```
 
-Or, instead of `login`, set a fine-grained PAT (Contents:write on the launcher
+Or, instead of `login`, set a fine-grained PAT (Actions: read/write on the launcher
 repo only): `export INSULA_GITHUB_TOKEN=github_pat_...`.
 
 ## Configure

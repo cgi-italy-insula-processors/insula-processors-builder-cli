@@ -4,7 +4,8 @@ Only three capabilities are used, all backed by an Actions:write fine-grained PA
   - trigger workflow_dispatch
   - read workflow runs / artifacts
   - download an artifact
-The PAT must NOT carry Contents write, so it cannot push code or alter workflows.
+The token needs Actions: write to dispatch; it needs NO Contents permission, so it
+cannot push code or alter workflows.
 """
 
 from __future__ import annotations
