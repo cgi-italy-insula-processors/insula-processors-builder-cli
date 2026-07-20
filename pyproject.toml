@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "insula-processor-cli"
+version = "0.1.0"
+description = "Launch the cgi-italy processor build pipeline for a public processor repo and publish its CWL."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "CGI Italy" }]
+dependencies = [
+    "requests>=2.31,<3",
+]
+
+[project.scripts]
+insula-processor = "insula_processor_cli.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/insula_processor_cli"]

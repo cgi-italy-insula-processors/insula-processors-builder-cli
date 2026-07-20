@@ -1,0 +1,27 @@
+# Copy to ~/.config/insula-processor/config.toml and edit.
+# Secrets do NOT go here. Authenticate with `insula-processor login` (device flow)
+# or set INSULA_GITHUB_TOKEN. Provide the deploy token via env:
+#   INSULA_API_TOKEN   your api token for the CWL deploy endpoint
+
+pipeline_repo = "cgi-italy/insula-processor-launcher"
+workflow = "build-external.yml"
+
+# GitHub App client id for `insula-processor login` (device flow). Set once the
+# App is registered. Can also come from INSULA_GITHUB_APP_CLIENT_ID.
+app_client_id = ""
+
+# OGC API - Processes deploy endpoint (Insula).
+publish_endpoint = "https://insula.earth/ogcapi/processes"
+
+# How the api token is attached to the publish request.
+auth_header = "Authorization"
+auth_format = "Bearer {token}"
+
+# "raw" = POST the CWL as the request body (OGC API - Processes default).
+# "multipart" = POST it as a file field named upload_field.
+upload_mode = "raw"
+content_type = "application/cwl+yaml"
+upload_field = "file"
+
+poll_timeout_seconds = 1800
+poll_interval_seconds = 10
