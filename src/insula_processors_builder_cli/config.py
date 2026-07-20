@@ -13,7 +13,7 @@ from typing import Optional
 
 GITHUB_API = "https://api.github.com"
 
-# The private LAUNCHER repo that hosts the orchestrator workflow. Users get write
+# The public LAUNCHER repo that hosts the orchestrator workflow. Users get write
 # (or a fine-grained PAT with Actions: read/write) on THIS repo only, never on
 # insula-processors-parent-pipeline. GitHub has no dispatch-only permission, so triggering needs
 # write here; secrets are protected by an Environment branch rule (default branch
