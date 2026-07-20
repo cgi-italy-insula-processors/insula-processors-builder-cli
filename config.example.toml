@@ -1,27 +1,30 @@
-# Copy to ~/.config/insula-processor/config.toml and edit.
-# Secrets do NOT go here. Authenticate with `insula-processor login` (device flow)
-# or set INSULA_GITHUB_TOKEN. Provide the deploy token via env:
-#   INSULA_API_TOKEN   your api token for the CWL deploy endpoint
+# OPTIONAL overrides. You normally do NOT need this file: the CLI ships with
+# working defaults, so `insula-processors-builder login` + INSULA_API_TOKEN + `create` just
+# works. Copy this to ~/.config/insula-processors-builder/config.toml (or pass --config)
+# ONLY to change one of the defaults below.
+#
+# Secrets never go here: authenticate with `insula-processors-builder login` (or set
+# INSULA_GITHUB_TOKEN), and provide the deploy token via the INSULA_API_TOKEN env
+# var. Precedence: built-in defaults < this file < env vars < command-line flags.
+#
+# Every key below is shown with its built-in default; uncomment and change only
+# the ones you need to override.
 
-pipeline_repo = "cgi-italy/insula-processor-launcher"
-workflow = "build-external.yml"
+# pipeline_repo = "cgi-italy/insula-processor-launcher"
+# workflow = "build-external.yml"
 
-# GitHub App client id for `insula-processor login` (device flow). Set once the
-# App is registered. Can also come from INSULA_GITHUB_APP_CLIENT_ID.
-app_client_id = ""
+# GitHub App client id for `insula-processors-builder login`. Shipped by default; override
+# only to point at a different App (or use INSULA_GITHUB_APP_CLIENT_ID).
+# app_client_id = "Iv23liZgFmrhfIJzJDUS"
 
-# OGC API - Processes deploy endpoint (Insula).
-publish_endpoint = "https://insula.earth/ogcapi/processes"
+# OGC API - Processes deploy endpoint, and how the token/CWL are sent. Override
+# only if the Insula deploy contract differs.
+# publish_endpoint = "https://insula.earth/ogcapi/processes"
+# auth_header = "Authorization"
+# auth_format = "Bearer {token}"
+# upload_mode = "raw"          # "raw" = CWL as the request body; "multipart" = file field
+# content_type = "application/cwl+yaml"
+# upload_field = "file"        # multipart field name (upload_mode = "multipart" only)
 
-# How the api token is attached to the publish request.
-auth_header = "Authorization"
-auth_format = "Bearer {token}"
-
-# "raw" = POST the CWL as the request body (OGC API - Processes default).
-# "multipart" = POST it as a file field named upload_field.
-upload_mode = "raw"
-content_type = "application/cwl+yaml"
-upload_field = "file"
-
-poll_timeout_seconds = 1800
-poll_interval_seconds = 10
+# poll_timeout_seconds = 1800
+# poll_interval_seconds = 10

@@ -1,4 +1,4 @@
-"""insula-processor-cli: launch the cgi-italy processor pipeline and publish its CWL.
+"""insula-processors-builder-cli: launch the cgi-italy processor pipeline and publish its CWL.
 
 The api token used to authenticate the final CWL POST never leaves this machine:
 it is read locally and sent straight to the publish endpoint. It is never passed

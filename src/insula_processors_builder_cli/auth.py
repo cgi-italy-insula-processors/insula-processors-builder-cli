@@ -1,6 +1,6 @@
 """GitHub App OAuth device flow, so users authenticate without creating a PAT.
 
-`insula-processor login` runs the device flow and caches the resulting
+`insula-processors-builder login` runs the device flow and caches the resulting
 user-to-server token locally (mode 0600). `create` uses it when
 INSULA_GITHUB_TOKEN is not set. The token is bounded by the user's access to the
 launcher repo, exactly like a PAT would be.
@@ -60,7 +60,7 @@ def device_login(client_id: str) -> str:
             interval = int(poll.get("interval", interval + 5))
             continue
         raise CliError(f"login failed: {error or 'unknown error'}")
-    raise CliError("login timed out; run `insula-processor login` again")
+    raise CliError("login timed out; run `insula-processors-builder login` again")
 
 
 def save_token(token: str) -> None:

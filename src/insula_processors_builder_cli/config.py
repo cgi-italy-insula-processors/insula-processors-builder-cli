@@ -1,6 +1,6 @@
 """Configuration, constants, and the workflow_dispatch contract.
 
-The orchestrator workflow in parent-pipeline (Phase 3) MUST declare exactly the
+The orchestrator workflow in insula-processors-parent-pipeline (Phase 3) MUST declare exactly the
 inputs listed in WORKFLOW_INPUTS below and set a `run-name:` that embeds
 ${{ inputs.correlation_id }} so this CLI can locate the run it triggered.
 """
@@ -15,7 +15,7 @@ GITHUB_API = "https://api.github.com"
 
 # The private LAUNCHER repo that hosts the orchestrator workflow. Users get write
 # (or a Contents:write fine-grained PAT) on THIS repo only, never on
-# parent-pipeline. GitHub has no dispatch-only permission, so triggering needs
+# insula-processors-parent-pipeline. GitHub has no dispatch-only permission, so triggering needs
 # write here; secrets are protected by an Environment branch rule (default branch
 # only) and the launcher's branch protection, not by withholding write.
 DEFAULT_PIPELINE_REPO = "cgi-italy/insula-processor-launcher"
@@ -40,9 +40,11 @@ WORKFLOW_INPUTS = (
 ENV_API_TOKEN = "INSULA_API_TOKEN"
 ENV_GITHUB_TOKEN = "INSULA_GITHUB_TOKEN"
 
-# GitHub App client id used by `insula-processor login` (OAuth device flow).
-# Set INSULA_GITHUB_APP_CLIENT_ID (or app_client_id in config) to the registered
-# App's client id. Empty means device-flow login is not configured.
+# GitHub App client id used by `insula-processors-builder login` (OAuth device flow).
+# NON-SECRET: safe to commit. Shipped as the default so `login` works with no
+# config. Override with INSULA_GITHUB_APP_CLIENT_ID or app_client_id in config.
+# <- paste the "Insula Processor CLI" App client id here (e.g. "Iv23li...").
+DEFAULT_APP_CLIENT_ID = "Iv23liZgFmrhfIJzJDUS"
 ENV_APP_CLIENT_ID = "INSULA_GITHUB_APP_CLIENT_ID"
 DEVICE_CODE_URL = "https://github.com/login/device/code"
 ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -56,7 +58,7 @@ class Settings:
     workflow: str = DEFAULT_WORKFLOW
     # Branch of the PIPELINE repo whose workflow runs. This is NOT the user's ref
     # (that travels as a workflow input). workflow_dispatch's top-level ref selects
-    # which branch of parent-pipeline executes; it must be the default branch.
+    # which branch of insula-processors-parent-pipeline executes; it must be the default branch.
     pipeline_ref: str = "main"
     # OGC API - Processes deploy endpoint (Part 2 DRU). Default set for Insula.
     publish_endpoint: Optional[str] = "https://insula.earth/ogcapi/processes"
@@ -71,7 +73,7 @@ class Settings:
     poll_timeout_seconds: int = 1800
     poll_interval_seconds: int = 10
     # GitHub App client id for `login` (device flow); empty = not configured.
-    app_client_id: str = ""
+    app_client_id: str = DEFAULT_APP_CLIENT_ID
 
 
 def load_config_file(path: str) -> dict:
@@ -95,7 +97,7 @@ def _config_dir() -> str:
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
         os.path.expanduser("~"), ".config"
     )
-    return os.path.join(base, "insula-processor")
+    return os.path.join(base, "insula-processors-builder")
 
 
 def default_config_path() -> str:

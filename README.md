@@ -1,4 +1,4 @@
-# insula-processor-cli
+# insula-processors-builder-cli
 
 Launch the cgi-italy processor build pipeline for your PUBLIC processor repo,
 then deploy the produced CWL to Insula. No server to run, no web form: everything
@@ -25,7 +25,7 @@ lives in a cgi-italy repo you cannot alter; you are granted access only to
 ## Install
 
 ```
-pipx install insula-processor-cli
+pipx install insula-processors-builder-cli
 ```
 
 ## Authenticate
@@ -33,7 +33,7 @@ pipx install insula-processor-cli
 Log in once via GitHub device flow (no PAT to create):
 
 ```
-insula-processor login
+insula-processors-builder login
 ```
 
 Or, instead of `login`, set a fine-grained PAT (Contents:write on the launcher
@@ -41,7 +41,7 @@ repo only): `export INSULA_GITHUB_TOKEN=github_pat_...`.
 
 ## Configure
 
-Copy `config.example.toml` to `~/.config/insula-processor/config.toml` and adjust
+Copy `config.example.toml` to `~/.config/insula-processors-builder/config.toml` and adjust
 the publish endpoint/auth if needed. Provide the deploy token via env:
 
 ```
@@ -55,7 +55,7 @@ Missing secrets are prompted for interactively (never echoed).
 Build a repo and deploy its CWL:
 
 ```
-insula-processor create --repo-url https://github.com/<you>/<processor>
+insula-processors-builder create --repo-url https://github.com/<you>/<processor>
 ```
 
 Iterate: edit code, `git push`, run again. Each run builds the pushed commit and
@@ -64,7 +64,7 @@ produces its own image tag. Run as many times as needed.
 Build only, keep the CWL locally, skip deploying (useful while iterating):
 
 ```
-insula-processor create --repo-url https://github.com/<you>/<processor> --no-publish --out my.cwl
+insula-processors-builder create --repo-url https://github.com/<you>/<processor> --no-publish --out my.cwl
 ```
 
 ## Maintainers: bypass a failing scan
@@ -74,7 +74,7 @@ security scan. `--bypass` implies **no deploy** (so you do not accidentally depl
 under your own api token); add `--force-publish` to deploy anyway.
 
 ```
-insula-processor create --repo-url https://github.com/<user>/<processor> --ref <ref> --bypass
+insula-processors-builder create --repo-url https://github.com/<user>/<processor> --ref <ref> --bypass
 ```
 
 The `repo_url` and `ref` for a failed run are shown in that run (and in its

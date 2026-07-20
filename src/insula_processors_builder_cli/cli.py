@@ -1,7 +1,7 @@
 """Command-line entry point.
 
-  insula-processor login
-  insula-processor create --repo-url https://github.com/<you>/<processor> [options]
+  insula-processors-builder login
+  insula-processors-builder create --repo-url https://github.com/<you>/<processor> [options]
 
 Creates a processor on the platform end to end: triggers the cgi-italy pipeline
 for a PUBLIC processor repo, waits for it to build/scan/publish, downloads the
@@ -52,7 +52,7 @@ def _resolve_github_token(args):
     if cached:
         return cached
     raise CliError(
-        "no GitHub token: run `insula-processor login`, set "
+        "no GitHub token: run `insula-processors-builder login`, set "
         f"{config.ENV_GITHUB_TOKEN}, or pass --github-token"
     )
 
@@ -162,7 +162,7 @@ def _cmd_create(args) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="insula-processor", description=__doc__)
+    parser = argparse.ArgumentParser(prog="insula-processors-builder", description=__doc__)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command")
 
