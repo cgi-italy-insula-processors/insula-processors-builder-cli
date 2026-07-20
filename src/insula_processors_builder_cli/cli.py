@@ -103,6 +103,26 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+def _cmd_deploy(args) -> int:
+    """Deploy an already-built CWL to Insula with your api token. Used when a
+    maintainer produced the CWL via a --bypass build and you deploy it yourself."""
+    settings = _build_settings(args)
+    try:
+        with open(args.cwl, "rb") as handle:
+            cwl_bytes = handle.read()
+    except OSError as exc:
+        raise CliError(f"cannot read CWL file: {exc}") from exc
+    api_token = _resolve_secret(
+        args.api_token, config.ENV_API_TOKEN, "Publish api token: ", required=True
+    )
+    _log(f"Deploying {args.cwl} to {settings.publish_endpoint} ...")
+    response = publish_cwl(settings, api_token, cwl_bytes, os.path.basename(args.cwl))
+    _log("Deployed.")
+    if response:
+        print(response)
+    return 0
+
+
 def _cmd_create(args) -> int:
     _validate_repo_url(args.repo_url)
     settings = _build_settings(args)
@@ -173,6 +193,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     logout = sub.add_parser("logout", help="remove the cached login token")
     logout.set_defaults(func=_cmd_logout)
+
+    dep = sub.add_parser(
+        "deploy", help="deploy an already-built CWL file to Insula (e.g. after a maintainer --bypass build)"
+    )
+    dep.add_argument("--cwl", required=True, help="path to the CWL file to deploy")
+    dep.add_argument("--endpoint", help="override the CWL publish endpoint")
+    dep.add_argument("--api-token", help=f"prefer the {config.ENV_API_TOKEN} env var")
+    dep.add_argument("--auth-header", help="header name carrying the api token")
+    dep.add_argument("--auth-format", help="header value template, e.g. 'Bearer {token}'")
+    dep.add_argument("--upload-field", help="multipart field name for the CWL upload")
+    dep.add_argument("--config", help="path to a TOML config file")
+    dep.set_defaults(func=_cmd_deploy)
 
     run = sub.add_parser(
         "create", help="build a processor repo and publish its CWL to the platform"
