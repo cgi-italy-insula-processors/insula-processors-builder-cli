@@ -1,14 +1,15 @@
 """Configuration, constants, and the workflow_dispatch contract.
 
-The orchestrator workflow in insula-processors-parent-pipeline (Phase 3) MUST declare exactly the
-inputs listed in WORKFLOW_INPUTS below and set a `run-name:` that embeds
-${{ inputs.correlation_id }} so this CLI can locate the run it triggered.
+The orchestrator workflow build-external.yml in the insula-processor-launcher repo
+MUST declare exactly the inputs listed in WORKFLOW_INPUTS below and set a
+`run-name:` that embeds ${{ inputs.correlation_id }} so this CLI can locate the run
+it triggered.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 GITHUB_API = "https://api.github.com"
@@ -43,7 +44,6 @@ ENV_GITHUB_TOKEN = "INSULA_GITHUB_TOKEN"
 # GitHub App client id used by `insula-processors-builder login` (OAuth device flow).
 # NON-SECRET: safe to commit. Shipped as the default so `login` works with no
 # config. Override with INSULA_GITHUB_APP_CLIENT_ID or app_client_id in config.
-# <- paste the "Insula Processor CLI" App client id here (e.g. "Iv23li...").
 DEFAULT_APP_CLIENT_ID = "Iv23liZgFmrhfIJzJDUS"
 ENV_APP_CLIENT_ID = "INSULA_GITHUB_APP_CLIENT_ID"
 DEVICE_CODE_URL = "https://github.com/login/device/code"
@@ -58,7 +58,9 @@ class Settings:
     workflow: str = DEFAULT_WORKFLOW
     # Branch of the PIPELINE repo whose workflow runs. This is NOT the user's ref
     # (that travels as a workflow input). workflow_dispatch's top-level ref selects
-    # which branch of insula-processors-parent-pipeline executes; it must be the default branch.
+    # which branch of insula-processor-launcher executes (contract 2: it must be
+    # the launcher's default branch; the launcher then calls parent-pipeline at
+    # its own pinned SHA).
     pipeline_ref: str = "main"
     # OGC API - Processes deploy endpoint (Part 2 DRU). Default set for Insula.
     publish_endpoint: Optional[str] = "https://insula.earth/ogcapi/processes"
@@ -77,20 +79,11 @@ class Settings:
 
 
 def load_config_file(path: str) -> dict:
-    """Load a TOML config file. Requires Python 3.11+ (tomllib) or the `tomli`
-    package. If neither is available, tell the user to use flags/env instead."""
-    try:
-        import tomllib as toml_reader  # Python 3.11+
-    except ModuleNotFoundError:
-        try:
-            import tomli as toml_reader  # type: ignore
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "reading a config file needs Python 3.11+ or `pip install tomli`; "
-                "otherwise pass values with flags or environment variables"
-            ) from exc
+    """Load a TOML config file (Python 3.11+; tomllib is in the stdlib)."""
+    import tomllib
+
     with open(path, "rb") as handle:
-        return toml_reader.load(handle)
+        return tomllib.load(handle)
 
 
 def _config_dir() -> str:

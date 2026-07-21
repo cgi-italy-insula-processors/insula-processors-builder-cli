@@ -27,11 +27,16 @@ def device_login(client_id: str) -> str:
             f"{config.ENV_APP_CLIENT_ID}, or use a PAT via {config.ENV_GITHUB_TOKEN}"
         )
 
-    resp = requests.post(
-        config.DEVICE_CODE_URL, headers=_JSON, data={"client_id": client_id}, timeout=30
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        resp = requests.post(
+            config.DEVICE_CODE_URL, headers=_JSON, data={"client_id": client_id}, timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as exc:
+        raise CliError(f"device code request failed: {exc}") from exc
+    except ValueError as exc:  # includes JSONDecodeError
+        raise CliError(f"device code response was not valid JSON: {exc}") from exc
     if "device_code" not in data:
         raise CliError(f"device code request failed: {data.get('error', 'unknown')}")
 
@@ -41,16 +46,21 @@ def device_login(client_id: str) -> str:
     deadline = time.monotonic() + int(data.get("expires_in", 900))
     while time.monotonic() < deadline:
         time.sleep(interval)
-        poll = requests.post(
-            config.ACCESS_TOKEN_URL,
-            headers=_JSON,
-            data={
-                "client_id": client_id,
-                "device_code": data["device_code"],
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            },
-            timeout=30,
-        ).json()
+        try:
+            poll = requests.post(
+                config.ACCESS_TOKEN_URL,
+                headers=_JSON,
+                data={
+                    "client_id": client_id,
+                    "device_code": data["device_code"],
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                },
+                timeout=30,
+            ).json()
+        except requests.RequestException as exc:
+            raise CliError(f"login poll failed: {exc}") from exc
+        except ValueError as exc:  # includes JSONDecodeError
+            raise CliError(f"login poll response was not valid JSON: {exc}") from exc
         if "access_token" in poll:
             return poll["access_token"]
         error = poll.get("error")
@@ -65,7 +75,11 @@ def device_login(client_id: str) -> str:
 
 def save_token(token: str) -> None:
     path = config.token_cache_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    directory = os.path.dirname(path)
+    # 0700 so a co-located user cannot even list the token filename. makedirs'
+    # mode is ignored when the dir already exists, so also chmod explicitly.
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
     # Create with 0600 before writing so the token is never briefly world-readable.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:

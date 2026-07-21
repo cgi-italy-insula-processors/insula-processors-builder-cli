@@ -7,11 +7,19 @@ name = "insula-processors-builder-cli"
 version = "0.1.0"
 description = "Launch the cgi-italy processor build pipeline for a public processor repo and publish its CWL."
 readme = "README.md"
-requires-python = ">=3.9"
-license = { text = "Proprietary" }
+# 3.11+: the config loader uses the stdlib tomllib (no tomli fallback).
+requires-python = ">=3.11"
+# Matches the LICENSE file (the Insula platform is AGPL).
+license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "CGI Italy" }]
 dependencies = [
     "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6,<1",
+    "pytest>=8,<9",
 ]
 
 [project.scripts]
@@ -19,3 +27,15 @@ insula-processors-builder = "insula_processors_builder_cli.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/insula_processors_builder_cli"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+# High-signal only (pyflakes + syntax): catch real errors without restyling the
+# existing code. Widen later behind a formatting pass if desired.
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
