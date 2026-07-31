@@ -143,7 +143,12 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     except OSError as exc:
         raise CliError(f"cannot read CWL file: {exc}") from exc
     _lint_cwl(cwl_bytes)
-    api_token = _resolve_secret(args.api_token, config.ENV_API_TOKEN, "Publish api token: ")
+    api_token = _resolve_secret(
+        args.api_token,
+        config.ENV_API_TOKEN,
+        "Provide Insula API Token (input hidden; generate one at "
+        "https://insula.earth/awareness/account/api_keys): ",
+    )
     _log(f"Deploying {args.cwl} to {settings.publish_endpoint} ...")
     response = publish_cwl(settings, api_token, cwl_bytes, os.path.basename(args.cwl))
     _log("Deployed.")
@@ -208,7 +213,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
     # spending a full pipeline run on a missing credential.
     api_token = None
     if not no_publish:
-        api_token = _resolve_secret(args.api_token, config.ENV_API_TOKEN, "Publish api token: ")
+        api_token = _resolve_secret(
+        args.api_token,
+        config.ENV_API_TOKEN,
+        "Provide Insula API Token (input hidden; generate one at "
+        "https://insula.earth/awareness/account/api_keys): ",
+    )
 
     client = GitHubClient(github_token, settings.pipeline_repo)
     filename, cwl_bytes = _dispatch_and_collect(client, settings, args)

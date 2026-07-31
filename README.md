@@ -32,25 +32,29 @@ pipx install git+https://github.com/cgi-italy-insula-processors/insula-processor
 
 ## Authenticate
 
-Log in once via GitHub device flow (no PAT to create):
+Log in via GitHub device flow (no PAT to create):
 
 ```
 insula-processors-builder login
 ```
 
-Or, instead of `login`, set a fine-grained PAT (Actions: read/write on the launcher
-repo only): `export INSULA_GITHUB_TOKEN=github_pat_...`.
+The login token expires after about 8 hours; when a `create` fails with an auth
+error, run `login` again. To avoid re-logging in, set a fine-grained PAT instead
+(Actions: read/write on the launcher repo only): `export INSULA_GITHUB_TOKEN=github_pat_...`.
 
 ## Configure
 
 Copy `config.example.toml` to `~/.config/insula-processors-builder/config.toml` and adjust
-the publish endpoint/auth if needed. Provide the deploy token via env:
+the publish endpoint/auth if needed. Generate an api token at
+https://insula.earth/awareness/account/api_keys, then provide it via env:
 
 ```
-export INSULA_API_TOKEN=...   # your insula.earth api token, for the CWL deploy
+export INSULA_API_TOKEN="..."   # your insula.earth api token, for the CWL deploy
 ```
 
-Missing secrets are prompted for interactively (never echoed).
+Wrap the token value in double quotes: without them the shell can break on special
+characters in the key. Missing secrets are prompted for interactively; a token you
+type or paste at the prompt is NOT shown in the terminal.
 
 ## Use
 
@@ -86,6 +90,21 @@ insula-processors-builder create --repo-url https://github.com/<user>/<processor
 
 The `repo_url` and `ref` for a failed run are shown in that run (and in its
 run-name). Any other actor using `--bypass` has no effect.
+
+## Deploy a CWL a maintainer built for you
+
+If a maintainer had to force your build (a `--bypass` run, e.g. to get an image past
+a scan) they hand you just the produced `processor.cwl`. Deploy it under your OWN api
+token, with no rebuild:
+
+```
+insula-processors-builder deploy --cwl processor.cwl
+```
+
+Generate the api token at https://insula.earth/awareness/account/api_keys. Set
+`INSULA_API_TOKEN` (in double quotes) or let the CLI prompt for it; a typed or pasted
+token is not shown in the terminal. The token is used only for this local POST and is
+never sent to GitHub.
 
 ## What a run does
 
