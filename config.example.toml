@@ -21,7 +21,7 @@
 # only if the Insula deploy contract differs.
 # publish_endpoint = "https://insula.earth/ogcapi/processes"
 # auth_header = "Authorization"
-# auth_format = "Bearer {token}"
+# auth_format = "Apikey {token}"
 # upload_mode = "raw"          # "raw" = CWL as the request body; "multipart" = file field
 # content_type = "application/cwl+yaml"
 # upload_field = "file"        # multipart field name (upload_mode = "multipart" only)

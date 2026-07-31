@@ -66,7 +66,7 @@ class Settings:
     publish_endpoint: Optional[str] = "https://insula.earth/ogcapi/processes"
     # How the api token is attached to the publish request.
     auth_header: str = "Authorization"
-    auth_format: str = "Bearer {token}"
+    auth_format: str = "Apikey {token}"
     # "raw" posts the CWL as the request body (OGC API - Processes default);
     # "multipart" posts it as a file field named upload_field.
     upload_mode: str = "raw"

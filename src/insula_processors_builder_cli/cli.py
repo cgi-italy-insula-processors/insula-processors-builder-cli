@@ -277,7 +277,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dep.add_argument("--endpoint", help="override the CWL publish endpoint")
     dep.add_argument("--api-token", help=f"prefer the {config.ENV_API_TOKEN} env var")
     dep.add_argument("--auth-header", help="header name carrying the api token")
-    dep.add_argument("--auth-format", help="header value template, e.g. 'Bearer {token}'")
+    dep.add_argument("--auth-format", help="header value template, e.g. 'Apikey {token}'")
     dep.add_argument("--upload-field", help="multipart field name for the CWL upload")
     dep.add_argument("--config", help="path to a TOML config file")
     dep.set_defaults(func=_cmd_deploy)
