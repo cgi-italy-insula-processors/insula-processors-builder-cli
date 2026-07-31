@@ -25,6 +25,7 @@
 # upload_mode = "raw"          # "raw" = CWL as the request body; "multipart" = file field
 # content_type = "application/cwl+yaml"
 # upload_field = "file"        # multipart field name (upload_mode = "multipart" only)
+# verify_tls = true            # set false (or pass --insecure) behind a corporate TLS-inspecting proxy
 
 # poll_timeout_seconds = 1800
 # poll_interval_seconds = 10

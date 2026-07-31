@@ -16,13 +16,15 @@ class _Resp:
         self.text = text
 
 
-def _post_sequence(monkeypatch, outcomes):
+def _post_sequence(monkeypatch, outcomes, kwargs_sink=None):
     """Stub requests.post to yield each outcome in turn (exception or _Resp)."""
     calls = []
 
     def fake_post(url, **kwargs):
         outcome = outcomes[len(calls)]
         calls.append(url)
+        if kwargs_sink is not None:
+            kwargs_sink.append(kwargs)
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -99,3 +101,17 @@ def test_504_is_not_retried(monkeypatch):
     with pytest.raises(PublishError, match="may still have been processed"):
         _publish()
     assert len(calls) == 1
+
+
+def test_verify_tls_defaults_true(monkeypatch):
+    sink = []
+    _post_sequence(monkeypatch, [_Resp(200, "ok")], kwargs_sink=sink)
+    publish.publish_cwl(Settings(), "tok", b"cwl", "p.cwl")
+    assert sink[0]["verify"] is True
+
+
+def test_insecure_disables_verify(monkeypatch):
+    sink = []
+    _post_sequence(monkeypatch, [_Resp(200, "ok")], kwargs_sink=sink)
+    publish.publish_cwl(Settings(verify_tls=False), "tok", b"cwl", "p.cwl")
+    assert sink[0]["verify"] is False

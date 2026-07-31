@@ -31,6 +31,14 @@ def publish_cwl(settings: Settings, api_token: str, cwl_bytes: bytes, filename: 
             "pass --endpoint)"
         )
 
+    if not settings.verify_tls:
+        # --insecure: skip TLS verification when a corporate TLS-inspecting proxy or
+        # internal CA re-signs the connection. Silence urllib3's per-request
+        # InsecureRequestWarning spam.
+        requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
+            requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
+        )
+
     headers = {settings.auth_header: settings.auth_format.format(token=api_token)}
     if settings.upload_mode == "multipart":
         kwargs = {"files": {settings.upload_field: (filename, cwl_bytes, settings.content_type)}}
@@ -45,7 +53,11 @@ def publish_cwl(settings: Settings, api_token: str, cwl_bytes: bytes, filename: 
             time.sleep(_RETRY_BACKOFF_SECONDS * (attempt - 1))
         try:
             resp = requests.post(
-                settings.publish_endpoint, headers=headers, timeout=60, **kwargs
+                settings.publish_endpoint,
+                headers=headers,
+                timeout=60,
+                verify=settings.verify_tls,
+                **kwargs,
             )
         except requests.exceptions.ReadTimeout as exc:
             # The endpoint received the request and may still be processing it;

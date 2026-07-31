@@ -72,6 +72,10 @@ class Settings:
     upload_mode: str = "raw"
     content_type: str = "application/cwl+yaml"
     upload_field: str = "file"
+    # Verify the TLS certificate of the publish endpoint. Disable (--insecure) when a
+    # corporate TLS-inspecting proxy or an internal CA re-signs the connection with a
+    # certificate the CLI cannot verify.
+    verify_tls: bool = True
     poll_timeout_seconds: int = 1800
     poll_interval_seconds: int = 10
     # GitHub App client id for `login` (device flow); empty = not configured.

@@ -106,6 +106,20 @@ Generate the api token at https://insula.earth/awareness/account/api_keys. Set
 token is not shown in the terminal. The token is used only for this local POST and is
 never sent to GitHub.
 
+## Behind a corporate TLS-inspecting proxy
+
+Corporate firewalls that inspect TLS re-sign HTTPS connections with an internal CA the
+CLI does not trust, so the deploy POST fails with a certificate verification error. Pass `--insecure` (on `create` or `deploy`) to skip
+verification for that request, or set `verify_tls = false` in the config file. This
+affects only the deploy endpoint, not GitHub.
+
+```
+insula-processors-builder deploy --cwl processor.cwl --insecure
+```
+
+The cleaner alternative, if your IT provides the proxy's root CA bundle, is to point
+`requests` at it instead of disabling verification: `export REQUESTS_CA_BUNDLE=/path/to/corp-ca.pem`.
+
 ## What a run does
 
 1. Triggers the launcher workflow (`workflow_dispatch`).

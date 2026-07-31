@@ -85,6 +85,9 @@ def _build_settings(args: argparse.Namespace) -> Settings:
             setattr(settings, name, value)
     if getattr(args, "endpoint", None):
         settings.publish_endpoint = args.endpoint
+    if getattr(args, "insecure", False):
+        settings.verify_tls = False
+        _log("warning: TLS verification disabled for the deploy endpoint (--insecure)")
     return settings
 
 
@@ -279,6 +282,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dep.add_argument("--auth-header", help="header name carrying the api token")
     dep.add_argument("--auth-format", help="header value template, e.g. 'Apikey {token}'")
     dep.add_argument("--upload-field", help="multipart field name for the CWL upload")
+    dep.add_argument("--insecure", action="store_true", help="skip TLS verification of the deploy endpoint (behind a corporate TLS-inspecting proxy)")
     dep.add_argument("--config", help="path to a TOML config file")
     dep.set_defaults(func=_cmd_deploy)
 
@@ -299,6 +303,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--api-token", help=f"prefer the {config.ENV_API_TOKEN} env var")
     run.add_argument("--out", help="write the downloaded CWL to this path (default: processor.cwl)")
     run.add_argument("--no-publish", action="store_true", help="build only; skip the deploy")
+    run.add_argument("--insecure", action="store_true", help="skip TLS verification of the deploy endpoint (behind a corporate TLS-inspecting proxy)")
     run.add_argument("--config", help="path to a TOML config file")
     run.set_defaults(func=_cmd_create)
     return parser
