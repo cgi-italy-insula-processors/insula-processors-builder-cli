@@ -17,14 +17,10 @@
 # only to point at a different App (or use INSULA_GITHUB_APP_CLIENT_ID).
 # app_client_id = "Iv23liZgFmrhfIJzJDUS"
 
-# OGC API - Processes deploy endpoint, and how the token/CWL are sent. Override
-# only if the Insula deploy contract differs.
+# OGC API - Processes deploy endpoint. The deploy is by reference: the CLI sends an
+# ogcapppkg JSON body { executionUnit: { href } } with header Authorization: Apikey
+# <token>, and Insula fetches the CWL from that URL. Only the endpoint is overridable.
 # publish_endpoint = "https://insula.earth/ogcapi/processes"
-# auth_header = "Authorization"
-# auth_format = "Apikey {token}"
-# upload_mode = "raw"          # "raw" = CWL as the request body; "multipart" = file field
-# content_type = "application/cwl+yaml"
-# upload_field = "file"        # multipart field name (upload_mode = "multipart" only)
 # verify_tls = true            # set false (or pass --insecure) behind a corporate TLS-inspecting proxy
 
 # poll_timeout_seconds = 1800

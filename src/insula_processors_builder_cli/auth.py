@@ -9,7 +9,9 @@ launcher repo, exactly like a PAT would be.
 from __future__ import annotations
 
 import os
+import sys
 import time
+from typing import Optional
 
 import requests
 
@@ -19,7 +21,7 @@ from .errors import CliError
 _JSON = {"Accept": "application/json"}
 
 
-def device_login(client_id: str) -> str:
+def device_login(client_id: Optional[str]) -> str:
     """Run the device flow and return an access token. Prints the user code."""
     if not client_id:
         raise CliError(
@@ -40,7 +42,13 @@ def device_login(client_id: str) -> str:
     if "device_code" not in data:
         raise CliError(f"device code request failed: {data.get('error', 'unknown')}")
 
-    print(f"Open {data['verification_uri']} and enter code: {data['user_code']}")
+    # Prompt to stderr: stdout is reserved for machine-readable output (e.g. the
+    # published CWL URL from `create --no-publish`).
+    print(
+        f"Open {data['verification_uri']} and enter code: {data['user_code']}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     interval = int(data.get("interval", 5))
     deadline = time.monotonic() + int(data.get("expires_in", 900))

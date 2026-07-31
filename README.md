@@ -17,8 +17,8 @@ lives in a cgi-italy repo you cannot alter; you are granted access only to
 - `workflow_dispatch` runs the launcher's default-branch workflow, so you cannot
   substitute your own pipeline.
 - Your **api token** (used to authenticate the CWL deploy) never leaves your
-  machine. The CLI downloads the built CWL and does the POST locally. GitHub
-  Actions never sees it.
+  machine. The CLI reads the published CWL's release URL and does the deploy POST
+  locally (Insula fetches the CWL from that URL). GitHub Actions never sees the token.
 - Base images must be public (the launcher is public, so no private base-image
   credentials are ever passed as workflow inputs).
 
@@ -32,6 +32,11 @@ pipx install git+https://github.com/cgi-italy-insula-processors/insula-processor
 
 ## Authenticate
 
+**A maintainer must grant you access first.** `login` succeeds for ANY GitHub
+account, so it is not a signal that you can build: `create` fails at dispatch with
+`404 Not Found` until a maintainer adds you to the launcher repo. Get onboarded
+before your first `create`.
+
 Log in via GitHub device flow (no PAT to create):
 
 ```
@@ -44,8 +49,10 @@ error, run `login` again. To avoid re-logging in, set a fine-grained PAT instead
 
 ## Configure
 
-Copy `config.example.toml` to `~/.config/insula-processors-builder/config.toml` and adjust
-the publish endpoint/auth if needed. Generate an api token at
+Copy `config.example.toml` to `~/.config/insula-processors-builder/config.toml` only to
+override a default such as the publish endpoint. The deploy Content-Type
+(`application/ogcapppkg+json`) and `Authorization: Apikey` scheme are fixed, not
+configurable, and secrets are never stored in the config file. Generate an api token at
 https://insula.earth/awareness/account/api_keys, then provide it via env:
 
 ```
@@ -71,10 +78,11 @@ Note: runs are keyed by repo + ref. Dispatching the same repo and ref again whil
 run is in flight CANCELS the older run (the CLI then reports its conclusion as
 `cancelled`). Let a run finish, or build a different ref, if you do not want that.
 
-Build only, keep the CWL locally, skip deploying (useful while iterating):
+Build only, skip deploying (useful while iterating). The finalized CWL is published
+at a durable public URL, which the CLI prints on stdout for a later `deploy`:
 
 ```
-insula-processors-builder create --repo-url https://github.com/<you>/<processor> --no-publish --out my.cwl
+insula-processors-builder create --repo-url https://github.com/<you>/<processor> --no-publish
 ```
 
 ## Maintainers: bypass a failing scan
@@ -94,11 +102,11 @@ run-name). Any other actor using `--bypass` has no effect.
 ## Deploy a CWL a maintainer built for you
 
 If a maintainer had to force your build (a `--bypass` run, e.g. to get an image past
-a scan) they hand you just the produced `processor.cwl`. Deploy it under your OWN api
-token, with no rebuild:
+a scan) they hand you the published CWL URL (the `create` output, a Release asset on
+the launcher repo). Deploy it under your OWN api token, with no rebuild:
 
 ```
-insula-processors-builder deploy --cwl processor.cwl
+insula-processors-builder deploy --cwl-url https://github.com/cgi-italy/insula-processor-launcher/releases/download/cwl-<id>/<app>-<sha8>.cwl
 ```
 
 Generate the api token at https://insula.earth/awareness/account/api_keys. Set
@@ -114,28 +122,51 @@ verification for that request, or set `verify_tls = false` in the config file. T
 affects only the deploy endpoint, not GitHub.
 
 ```
-insula-processors-builder deploy --cwl processor.cwl --insecure
+insula-processors-builder deploy --cwl-url <url> --insecure
 ```
 
 The cleaner alternative, if your IT provides the proxy's root CA bundle, is to point
 `requests` at it instead of disabling verification: `export REQUESTS_CA_BUNDLE=/path/to/corp-ca.pem`.
+
+## Command reference
+
+| Command | Purpose | Key flags |
+|---------|---------|-----------|
+| `login` | Cache a GitHub device-flow token | `--app-client-id`, `--config` |
+| `logout` | Remove the cached login token | - |
+| `validate --cwl <file>` | Check a local .cwl (with `__IMAGE__`) before building | - |
+| `create --repo-url <url>` | Build a processor repo and deploy its CWL | `--ref`, `--no-publish`, `--endpoint`, `--insecure`, `--bypass`, `--force-publish`, `--pipeline-repo`, `--workflow`, `--github-token`, `--api-token`, `--config` |
+| `deploy --cwl-url <url>` | Deploy an already-published CWL by its URL | `--endpoint`, `--insecure`, `--api-token`, `--config` |
+
+Environment variables: `INSULA_GITHUB_TOKEN` (GitHub token, skips `login`),
+`INSULA_API_TOKEN` (Insula deploy token), `INSULA_GITHUB_APP_CLIENT_ID`,
+`XDG_CONFIG_HOME` (config dir), `REQUESTS_CA_BUNDLE` (custom CA bundle).
+
+Token resolution: GitHub token = `--github-token` > `INSULA_GITHUB_TOKEN` > cached
+`login`. api token = `--api-token` > `INSULA_API_TOKEN` > interactive prompt.
+
+Exit codes: `0` success, `1` handled error, `2` no subcommand (help printed),
+`130` interrupted. `create --no-publish` prints the published CWL URL on stdout (all
+other logs go to stderr), so it is safe to capture in a script.
 
 ## What a run does
 
 1. Triggers the launcher workflow (`workflow_dispatch`).
 2. Waits while the pipeline clones your repo, secret-scans, builds, security-scans,
    and publishes the image.
-3. Downloads the CWL artifact (image reference already injected) and writes it
-   locally (`--out`, default `processor.cwl`) BEFORE deploying, so a failed deploy
-   never costs you the build: retry later with
-   `insula-processors-builder deploy --cwl processor.cwl`.
-4. POSTs the CWL to the endpoint with your api token. Transient failures
+3. The pipeline publishes the finalized CWL (image reference already injected) as a
+   GitHub Release on the launcher repo, tagged `cwl-<correlation_id>`. The CLI reads
+   that release's asset URL - a durable public link, so a failed deploy never costs
+   you the build: retry later with `insula-processors-builder deploy --cwl-url <url>`.
+4. Deploys the CWL to Insula by reference: it sends `{ executionUnit: { href } }`
+   with your api token, and Insula fetches the CWL from that URL. Transient failures
    (connection errors, 429/502/503) are retried a few times; anything else -
    including 504 and read timeouts, where the deploy may still have gone through -
-   is reported, with the CWL already saved locally.
+   is reported, with the CWL URL printed for a later `deploy`.
 
 ## Workflow contract
 
 The orchestrator workflow must accept these `workflow_dispatch` inputs and set a
 `run-name` containing `correlation_id`: `repo_url`, `ref`, `correlation_id`,
-`bypass_gate`. It uploads the CWL as an artifact named `cwl`.
+`bypass_gate`. It publishes the finalized CWL as a Release tagged
+`cwl-<correlation_id>` whose single asset is the CWL file.

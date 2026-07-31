@@ -4,9 +4,9 @@
   insula-processors-builder create --repo-url https://github.com/<you>/<processor> [options]
 
 Creates a processor on the platform end to end: triggers the cgi-italy pipeline
-for a PUBLIC processor repo, waits for it to build/scan/publish, downloads the
-produced CWL, and POSTs it to the consuming endpoint using your api token. The
-api token is used only for that final POST, locally; it is never sent to GitHub.
+for a PUBLIC processor repo, waits for it to build/scan/publish, then deploys the
+CWL the pipeline published (Insula fetches it by URL) using your api token. The
+api token is used only for that final deploy, locally; it is never sent to GitHub.
 """
 
 from __future__ import annotations
@@ -17,12 +17,13 @@ import os
 import sys
 import uuid
 from typing import Optional, Sequence
+from urllib.parse import urlparse
 
 from . import __version__, auth, config
 from .config import Settings
 from .errors import CliError
 from .github import GitHubClient
-from .publish import publish_cwl
+from .publish import fetch_cwl, publish_cwl
 
 
 def _log(msg: str) -> None:
@@ -79,15 +80,21 @@ def _build_settings(args: argparse.Namespace) -> Settings:
             raise CliError(f"cannot read config file {path}: {exc}") from exc
         settings = config.merge_settings(settings, data)
     # Explicit flags win over the config file.
-    for name in ("pipeline_repo", "workflow", "upload_field", "auth_header", "auth_format"):
+    for name in ("pipeline_repo", "workflow"):
         value = getattr(args, name, None)
         if value:
             setattr(settings, name, value)
     if getattr(args, "endpoint", None):
         settings.publish_endpoint = args.endpoint
+    if settings.publish_endpoint:
+        _validate_url(settings.publish_endpoint, "publish endpoint")
     if getattr(args, "insecure", False):
         settings.verify_tls = False
-        _log("warning: TLS verification disabled for the deploy endpoint (--insecure)")
+    # Warn whenever verification is off, no matter the source: a config-file
+    # verify_tls=false must not silently disable TLS on the token-bearing POST.
+    if not settings.verify_tls:
+        source = "--insecure" if getattr(args, "insecure", False) else "verify_tls=false in config"
+        _log(f"warning: TLS verification disabled for the deploy endpoint ({source})")
     return settings
 
 
@@ -99,6 +106,15 @@ def _validate_repo_url(url: str) -> None:
     # than after a full dispatch + wait ends in a confusing checkout 404.
     if slug.count("/") != 1 or not all(slug.split("/")):
         raise CliError("repo-url must be https://github.com/<owner>/<repo> (no extra path)")
+
+
+def _validate_url(url: str, what: str) -> None:
+    """Reject a non-http(s) or hostless URL. The publish endpoint carries the api
+    token and the CWL URL is fetched, so both must be real web URLs, not file://
+    or a bare path."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise CliError(f"{what} must be an http(s) URL, got: {url}")
 
 
 def _lint_cwl(cwl_bytes: bytes) -> None:
@@ -122,6 +138,45 @@ def _lint_cwl(cwl_bytes: bytes) -> None:
         raise CliError("CWL failed local checks: " + "; ".join(problems))
 
 
+def _validate_cwl_source(cwl_bytes: bytes) -> None:
+    """Structural check for an AUTHOR's local .cwl BEFORE building: one Workflow, one
+    CommandLineTool, a dockerPull, and exactly one `__IMAGE__` token still present.
+    Unlike `_lint_cwl` (which runs post-build and requires the token to be GONE),
+    this expects the token, since the pipeline injects the image later."""
+    try:
+        text = cwl_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CliError(f"CWL is not valid UTF-8: {exc}") from exc
+    problems = []
+    if text.count("class: Workflow") != 1:
+        problems.append("exactly one 'class: Workflow' is required")
+    if text.count("class: CommandLineTool") != 1:
+        problems.append("exactly one 'class: CommandLineTool' is required")
+    if "dockerPull" not in text:
+        problems.append("a DockerRequirement.dockerPull is required")
+    tokens = text.count("__IMAGE__")
+    if tokens != 1:
+        problems.append(
+            f"exactly one __IMAGE__ token is required (found {tokens}); the pipeline "
+            "injects the published image there"
+        )
+    if problems:
+        raise CliError("CWL failed local checks: " + "; ".join(problems))
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Lint a local .cwl before building, so structural mistakes fail on your
+    machine instead of after a full pipeline run."""
+    try:
+        with open(args.cwl, "rb") as handle:
+            cwl_bytes = handle.read()
+    except OSError as exc:
+        raise CliError(f"cannot read CWL file: {exc}") from exc
+    _validate_cwl_source(cwl_bytes)
+    _log(f"{args.cwl} passed local CWL checks.")
+    return 0
+
+
 def _cmd_login(args: argparse.Namespace) -> int:
     settings = _build_settings(args)
     token = auth.device_login(_resolve_app_client_id(args, settings))
@@ -136,34 +191,36 @@ def _cmd_logout(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_deploy(args: argparse.Namespace) -> int:
-    """Deploy an already-built CWL to Insula with your api token. Used when a
-    maintainer produced the CWL via a --bypass build and you deploy it yourself."""
-    settings = _build_settings(args)
-    try:
-        with open(args.cwl, "rb") as handle:
-            cwl_bytes = handle.read()
-    except OSError as exc:
-        raise CliError(f"cannot read CWL file: {exc}") from exc
-    _lint_cwl(cwl_bytes)
-    api_token = _resolve_secret(
-        args.api_token,
-        config.ENV_API_TOKEN,
-        "Provide Insula API Token (input hidden; generate one at "
-        "https://insula.earth/awareness/account/api_keys): ",
-    )
-    _log(f"Deploying {args.cwl} to {settings.publish_endpoint} ...")
-    response = publish_cwl(settings, api_token, cwl_bytes, os.path.basename(args.cwl))
+def _deploy_url(settings: Settings, api_token: str, cwl_url: str) -> int:
+    """Lint the referenced CWL, then deploy it by URL. Shared by create and deploy."""
+    _validate_url(cwl_url, "CWL URL")
+    _lint_cwl(fetch_cwl(settings, cwl_url))
+    _log(f"Deploying {cwl_url} to {settings.publish_endpoint} ...")
+    response = publish_cwl(settings, api_token, cwl_url)
     _log("Deployed.")
     if response:
         print(response)
     return 0
 
 
+def _cmd_deploy(args: argparse.Namespace) -> int:
+    """Deploy an already-built CWL to Insula with your api token, given its public
+    URL. Used when a maintainer produced the CWL via a --bypass build and shares
+    the release URL for you to deploy under your own api token."""
+    settings = _build_settings(args)
+    api_token = _resolve_secret(
+        args.api_token,
+        config.ENV_API_TOKEN,
+        "Provide Insula API Token (input hidden; generate one at "
+        "https://insula.earth/awareness/account/api_keys): ",
+    )
+    return _deploy_url(settings, api_token, args.cwl_url)
+
+
 def _dispatch_and_collect(
     client: GitHubClient, settings: Settings, args: argparse.Namespace
-) -> tuple[str, bytes]:
-    """Dispatch the pipeline run, wait for it, and return the built CWL artifact."""
+) -> str:
+    """Dispatch the pipeline run, wait for it, and return the published CWL URL."""
     correlation_id = uuid.uuid4().hex
     inputs = {
         "repo_url": args.repo_url,
@@ -185,7 +242,7 @@ def _dispatch_and_collect(
     _log(f"Run started: {client.run_url(run_id)}")
     _log("Waiting for build / scan / publish to finish ...")
     # Under --bypass the run concludes 'failure' (a scan failed) yet publish ran and
-    # produced the CWL, so tolerate a non-success conclusion and still collect it.
+    # published the CWL, so tolerate a non-success conclusion and still collect it.
     conclusion = client.wait_for_run(
         run_id,
         settings.poll_timeout_seconds,
@@ -197,7 +254,7 @@ def _dispatch_and_collect(
     else:
         _log(f"Pipeline concluded '{conclusion}'; continuing under --bypass to collect the CWL.")
 
-    return client.download_artifact(run_id, config.CWL_ARTIFACT_NAME)
+    return client.get_cwl_url(correlation_id)
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
@@ -217,77 +274,70 @@ def _cmd_create(args: argparse.Namespace) -> int:
     api_token = None
     if not no_publish:
         api_token = _resolve_secret(
-        args.api_token,
-        config.ENV_API_TOKEN,
-        "Provide Insula API Token (input hidden; generate one at "
-        "https://insula.earth/awareness/account/api_keys): ",
-    )
+            args.api_token,
+            config.ENV_API_TOKEN,
+            "Provide Insula API Token (input hidden; generate one at "
+            "https://insula.earth/awareness/account/api_keys): ",
+        )
 
     client = GitHubClient(github_token, settings.pipeline_repo)
-    filename, cwl_bytes = _dispatch_and_collect(client, settings, args)
-
-    # Persist the CWL BEFORE any deploy attempt: if the POST fails, the build's
-    # output survives locally and can be deployed later with `deploy --cwl`,
-    # instead of forcing a full pipeline re-run. Name the local file from a
-    # CLI-controlled value, not the artifact's own entry name.
-    out_path = args.out or "processor.cwl"
-    try:
-        with open(out_path, "wb") as handle:
-            handle.write(cwl_bytes)
-    except OSError as exc:
-        # The pipeline already ran; do not lose that with a raw traceback.
-        raise CliError(
-            f"cannot write CWL to {out_path}: {exc} (the CWL is still available "
-            f"as the 'cwl' artifact on the run page)"
-        ) from exc
-    _log(f"CWL written to {out_path}")
+    cwl_url = _dispatch_and_collect(client, settings, args)
+    # The finalized CWL lives at a durable public URL; no local copy needed. A
+    # failed deploy is retried with `deploy --cwl-url <url>`, not a pipeline re-run.
+    _log(f"CWL published at {cwl_url}")
 
     if no_publish:
+        print(cwl_url)
         return 0
 
-    _lint_cwl(cwl_bytes)
-    _log(f"Publishing CWL to {settings.publish_endpoint} ...")
     try:
-        response = publish_cwl(settings, api_token, cwl_bytes, filename)
+        return _deploy_url(settings, api_token, cwl_url)
     except CliError as exc:
         raise CliError(
-            f"{exc} (the built CWL is saved at {out_path}; deploy it without "
-            f"rebuilding via `insula-processors-builder deploy --cwl {out_path}`)"
+            f"{exc} (the built CWL is published at {cwl_url}; deploy it without "
+            f"rebuilding via `insula-processors-builder deploy --cwl-url {cwl_url}`)"
         ) from exc
-    _log("Published.")
-    if response:
-        print(response)
-    return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="insula-processors-builder", description=__doc__)
+    # allow_abbrev=False: a prefix like `--cwl` must NOT silently bind to `--cwl-url`
+    # (an unrecognized flag should error, not resolve to a longer one). argparse does
+    # not propagate this to subparsers, so each add_parser sets it too.
+    parser = argparse.ArgumentParser(
+        prog="insula-processors-builder", description=__doc__, allow_abbrev=False
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command")
 
-    login = sub.add_parser("login", help="authenticate via GitHub device flow (no PAT needed)")
+    login = sub.add_parser("login", help="authenticate via GitHub device flow (no PAT needed)", allow_abbrev=False)
     login.add_argument("--app-client-id", help=f"prefer the {config.ENV_APP_CLIENT_ID} env var")
     login.add_argument("--config", help="path to a TOML config file")
     login.set_defaults(func=_cmd_login)
 
-    logout = sub.add_parser("logout", help="remove the cached login token")
+    logout = sub.add_parser("logout", help="remove the cached login token", allow_abbrev=False)
     logout.set_defaults(func=_cmd_logout)
 
-    dep = sub.add_parser(
-        "deploy", help="deploy an already-built CWL file to Insula (e.g. after a maintainer --bypass build)"
+    val = sub.add_parser(
+        "validate", help="check a local .cwl for the Insula structure before building",
+        allow_abbrev=False,
     )
-    dep.add_argument("--cwl", required=True, help="path to the CWL file to deploy")
+    val.add_argument("--cwl", required=True, help="path to the local .cwl to check")
+    val.set_defaults(func=_cmd_validate)
+
+    dep = sub.add_parser(
+        "deploy", help="deploy an already-built CWL to Insula by its public URL (e.g. after a maintainer --bypass build)",
+        allow_abbrev=False,
+    )
+    dep.add_argument("--cwl-url", required=True, help="public URL of the CWL to deploy (Insula fetches it)")
     dep.add_argument("--endpoint", help="override the CWL publish endpoint")
     dep.add_argument("--api-token", help=f"prefer the {config.ENV_API_TOKEN} env var")
-    dep.add_argument("--auth-header", help="header name carrying the api token")
-    dep.add_argument("--auth-format", help="header value template, e.g. 'Apikey {token}'")
-    dep.add_argument("--upload-field", help="multipart field name for the CWL upload")
     dep.add_argument("--insecure", action="store_true", help="skip TLS verification of the deploy endpoint (behind a corporate TLS-inspecting proxy)")
     dep.add_argument("--config", help="path to a TOML config file")
     dep.set_defaults(func=_cmd_deploy)
 
     run = sub.add_parser(
-        "create", help="build a processor repo and publish its CWL to the platform"
+        "create", help="build a processor repo and publish its CWL to the platform",
+        allow_abbrev=False,
     )
     run.add_argument("--repo-url", required=True, help="public github.com URL of your processor repo")
     run.add_argument("--ref", default="main", help="branch or tag to build (default: main)")
@@ -296,13 +346,9 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--endpoint", help="override the CWL publish endpoint")
     run.add_argument("--pipeline-repo", help=f"default: {config.DEFAULT_PIPELINE_REPO}")
     run.add_argument("--workflow", help=f"default: {config.DEFAULT_WORKFLOW}")
-    run.add_argument("--upload-field", help="multipart field name for the CWL upload")
-    run.add_argument("--auth-header", help="header name carrying the api token")
-    run.add_argument("--auth-format", help="header value template, e.g. 'Bearer {token}'")
     run.add_argument("--github-token", help=f"prefer the {config.ENV_GITHUB_TOKEN} env var or `login`")
     run.add_argument("--api-token", help=f"prefer the {config.ENV_API_TOKEN} env var")
-    run.add_argument("--out", help="write the downloaded CWL to this path (default: processor.cwl)")
-    run.add_argument("--no-publish", action="store_true", help="build only; skip the deploy")
+    run.add_argument("--no-publish", action="store_true", help="build only; print the published CWL URL and skip the deploy")
     run.add_argument("--insecure", action="store_true", help="skip TLS verification of the deploy endpoint (behind a corporate TLS-inspecting proxy)")
     run.add_argument("--config", help="path to a TOML config file")
     run.set_defaults(func=_cmd_create)

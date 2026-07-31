@@ -34,8 +34,11 @@ def _post_sequence(monkeypatch, outcomes, kwargs_sink=None):
     return calls
 
 
+_URL = "https://example/app.cwl"
+
+
 def _publish() -> str:
-    return publish.publish_cwl(Settings(), "tok", b"cwl", "p.cwl")
+    return publish.publish_cwl(Settings(), "tok", _URL)
 
 
 def test_retries_connection_error_then_succeeds(monkeypatch):
@@ -106,12 +109,19 @@ def test_504_is_not_retried(monkeypatch):
 def test_verify_tls_defaults_true(monkeypatch):
     sink = []
     _post_sequence(monkeypatch, [_Resp(200, "ok")], kwargs_sink=sink)
-    publish.publish_cwl(Settings(), "tok", b"cwl", "p.cwl")
+    publish.publish_cwl(Settings(), "tok", _URL)
     assert sink[0]["verify"] is True
 
 
 def test_insecure_disables_verify(monkeypatch):
     sink = []
     _post_sequence(monkeypatch, [_Resp(200, "ok")], kwargs_sink=sink)
-    publish.publish_cwl(Settings(verify_tls=False), "tok", b"cwl", "p.cwl")
+    publish.publish_cwl(Settings(verify_tls=False), "tok", _URL)
     assert sink[0]["verify"] is False
+
+
+def test_sends_ogcapppkg_href_body(monkeypatch):
+    sink = []
+    _post_sequence(monkeypatch, [_Resp(200, "ok")], kwargs_sink=sink)
+    publish.publish_cwl(Settings(), "tok", _URL)
+    assert sink[0]["json"] == {"executionUnit": {"href": _URL}}

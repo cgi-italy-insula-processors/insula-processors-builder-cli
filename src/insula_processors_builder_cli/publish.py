@@ -1,5 +1,9 @@
-"""POST the built CWL to the consuming endpoint, authenticated with the user's
-api token. This runs locally: the api token never reaches GitHub Actions."""
+"""Deploy the built CWL to the OGC API - Processes endpoint, authenticated with
+the user's api token. This runs locally: the api token never reaches GitHub Actions.
+
+The deploy is by REFERENCE: the endpoint consumes an OGC Application Package
+(application/ogcapppkg+json) whose executionUnit is a link to the CWL. Insula
+fetches the CWL from that URL server-side; the CLI never uploads the document."""
 
 from __future__ import annotations
 
@@ -22,9 +26,38 @@ _RETRY_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 2
 _RETRY_STATUS = (429, 502, 503)
 
+# The OGC API - Processes Part 2 (DRU) deploy endpoint consumes this and only this.
+_CONTENT_TYPE = "application/ogcapppkg+json"
 
-def publish_cwl(settings: Settings, api_token: str, cwl_bytes: bytes, filename: str) -> str:
-    """Deploy the CWL to the OGC API - Processes endpoint. Returns the response text."""
+
+def _disable_tls_warnings() -> None:
+    # --insecure: silence urllib3's per-request InsecureRequestWarning spam when a
+    # corporate TLS-inspecting proxy or internal CA re-signs the connection.
+    requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
+        requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
+    )
+
+
+def fetch_cwl(settings: Settings, cwl_url: str) -> bytes:
+    """GET the published CWL so it can be linted locally before the deploy POST.
+    Confirms the reference resolves - the same URL Insula will fetch server-side."""
+    if not settings.verify_tls:
+        _disable_tls_warnings()
+    try:
+        resp = requests.get(cwl_url, timeout=60, verify=settings.verify_tls)
+    except requests.RequestException as exc:
+        raise PublishError(f"could not fetch the CWL from {cwl_url}: {exc}") from exc
+    if resp.status_code >= 400:
+        raise PublishError(
+            f"could not fetch the CWL from {cwl_url} ({resp.status_code}): "
+            f"{resp.text.strip()[:300]}"
+        )
+    return resp.content
+
+
+def publish_cwl(settings: Settings, api_token: str, cwl_url: str) -> str:
+    """Deploy the CWL referenced by cwl_url to the OGC API - Processes endpoint.
+    Returns the response text."""
     if not settings.publish_endpoint:
         raise PublishError(
             "no publish endpoint configured (set publish_endpoint in config or "
@@ -32,20 +65,15 @@ def publish_cwl(settings: Settings, api_token: str, cwl_bytes: bytes, filename: 
         )
 
     if not settings.verify_tls:
-        # --insecure: skip TLS verification when a corporate TLS-inspecting proxy or
-        # internal CA re-signs the connection. Silence urllib3's per-request
-        # InsecureRequestWarning spam.
-        requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
-            requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
-        )
+        _disable_tls_warnings()
 
-    headers = {settings.auth_header: settings.auth_format.format(token=api_token)}
-    if settings.upload_mode == "multipart":
-        kwargs = {"files": {settings.upload_field: (filename, cwl_bytes, settings.content_type)}}
-    else:
-        # OGC API - Processes deploy: raw application package as the request body.
-        headers["Content-Type"] = settings.content_type
-        kwargs = {"data": cwl_bytes}
+    # Insula's machine api key uses the Apikey scheme (a Bearer scheme returns 401).
+    headers = {
+        "Authorization": f"Apikey {api_token}",
+        "Content-Type": _CONTENT_TYPE,
+    }
+    # OGC Application Package: reference the CWL by URL (executionUnit as a link).
+    body = {"executionUnit": {"href": cwl_url}}
 
     last_error: Optional[Exception] = None
     for attempt in range(1, _RETRY_ATTEMPTS + 1):
@@ -55,9 +83,9 @@ def publish_cwl(settings: Settings, api_token: str, cwl_bytes: bytes, filename: 
             resp = requests.post(
                 settings.publish_endpoint,
                 headers=headers,
+                json=body,
                 timeout=60,
                 verify=settings.verify_tls,
-                **kwargs,
             )
         except requests.exceptions.ReadTimeout as exc:
             # The endpoint received the request and may still be processing it;
@@ -93,7 +121,7 @@ def publish_cwl(settings: Settings, api_token: str, cwl_bytes: bytes, filename: 
             continue
         if resp.status_code >= 400:
             raise PublishError(
-                f"endpoint rejected the CWL ({resp.status_code}): {resp.text.strip()[:300]}"
+                f"endpoint rejected the deploy ({resp.status_code}): {resp.text.strip()[:300]}"
             )
         return resp.text.strip()
 

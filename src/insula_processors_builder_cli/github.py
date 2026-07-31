@@ -1,23 +1,21 @@
-"""Minimal GitHub REST client for triggering the orchestrator and collecting its CWL.
+"""Minimal GitHub REST client for triggering the orchestrator and locating its CWL.
 
-Only three capabilities are used, all backed by an Actions:write fine-grained PAT:
+Capabilities used, all backed by an Actions:write fine-grained PAT:
   - trigger workflow_dispatch
-  - read workflow runs / artifacts
-  - download an artifact
+  - read workflow runs
+  - read the finalized-CWL release (public read) to get its download URL
 The token needs Actions: write to dispatch; it needs NO Contents permission, so it
-cannot push code or alter workflows.
+cannot push code or alter workflows (reading a public repo's release needs no scope).
 """
 
 from __future__ import annotations
 
-import io
 import time
-import zipfile
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import requests
 
-from .config import GITHUB_API
+from .config import GITHUB_API, RELEASE_TAG_PREFIX
 from .errors import ArtifactError, DispatchError, RunFailedError
 
 _API_VERSION = "2022-11-28"
@@ -28,11 +26,6 @@ _API_VERSION = "2022-11-28"
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_GET_ATTEMPTS = 6
 _MAX_RETRY_DELAY = 120
-
-# The CWL artifact is a single small YAML. Cap what we decompress so a malicious
-# --bypass build (a repo the invoking maintainer does not control) cannot exhaust
-# memory with a zip bomb.
-_MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
 
 
 class GitHubClient:
@@ -143,8 +136,17 @@ class GitHubClient:
                 last_detail = f"{resp.status_code}: {resp.text.strip()[:200]}"
                 time.sleep(self._retry_delay(resp, attempt))
                 continue
+            hint = ""
+            if resp.status_code == 404:
+                # The single most common first-run failure: login works for any
+                # GitHub account, but dispatch 404s until a maintainer onboards you.
+                hint = (
+                    " - the workflow/repo was not found, or your account is not yet"
+                    " onboarded on the launcher (a maintainer must grant you access);"
+                    " confirm access before retrying"
+                )
             raise DispatchError(
-                f"dispatch failed ({resp.status_code}): {resp.text.strip()[:300]}"
+                f"dispatch failed ({resp.status_code}){hint}: {resp.text.strip()[:300]}"
             )
         raise DispatchError(f"dispatch kept failing for {workflow}: {last_detail}")
 
@@ -188,8 +190,10 @@ class GitHubClient:
             if run.get("status") == "completed":
                 conclusion = run.get("conclusion") or "unknown"
                 if conclusion != "success" and not allow_failure:
+                    stages = self._failed_job_names(run_id)
+                    detail = f" at stage(s): {stages}" if stages else ""
                     raise RunFailedError(
-                        f"pipeline run concluded '{conclusion}': {run.get('html_url')}"
+                        f"pipeline run concluded '{conclusion}'{detail}: {run.get('html_url')}"
                     )
                 return conclusion
             time.sleep(interval)
@@ -201,35 +205,62 @@ class GitHubClient:
     def run_url(self, run_id: int) -> str:
         return f"https://github.com/{self._repo}/actions/runs/{run_id}"
 
-    def download_artifact(self, run_id: int, name: str) -> Tuple[str, bytes]:
-        """Return (safe_basename, bytes) of the single file inside the named artifact.
+    def _failed_job_names(self, run_id: int) -> str:
+        """Best-effort: names of the run's jobs that did not succeed, so a failure
+        can name the stage (e.g. 'security') instead of only a run URL to dig through.
+        Returns '' if the jobs cannot be read (never masks the underlying failure)."""
+        try:
+            resp = self._get(f"/actions/runs/{run_id}/jobs")
+        except RunFailedError:
+            return ""
+        names = [
+            j.get("name", "?")
+            for j in resp.json().get("jobs", [])
+            if j.get("conclusion") not in (None, "success", "skipped")
+        ]
+        return ", ".join(names)
 
-        The returned name is the archive member's BASENAME only (never a path), so it
-        cannot be used for path traversal, and the decompressed size is capped.
+    def get_cwl_url(self, correlation_id: str, appear_timeout: int = 60) -> str:
+        """Return the public download URL of the finalized CWL the run published.
+
+        The finalize step creates a Release tagged RELEASE_TAG_PREFIX+correlation_id
+        with the CWL as its single asset. Its browser_download_url is what the CLI
+        hands to Insula (executionUnit.href); Insula fetches the CWL from there.
+
+        The release is created at the very end of the run and the GitHub API is
+        eventually consistent, so a 404 right after the run completes is a
+        read-after-write lag, not a real absence: poll over a short window before
+        giving up. All failure modes raise ArtifactError (a missing artifact), never
+        RunFailedError.
         """
-        resp = self._get(f"/actions/runs/{run_id}/artifacts")
-        artifact = next(
-            (a for a in resp.json().get("artifacts", []) if a.get("name") == name),
-            None,
-        )
-        if artifact is None:
-            raise ArtifactError(f"artifact '{name}' not found on the run")
-
-        dl = self._get(f"/actions/artifacts/{artifact['id']}/zip", timeout=120)
-        with zipfile.ZipFile(io.BytesIO(dl.content)) as archive:
-            names = [n for n in archive.namelist() if not n.endswith("/")]
-            if not names:
-                raise ArtifactError(f"artifact '{name}' is empty")
-            member = names[0]
-            # Reject before reading if the declared size is already over the cap...
-            if archive.getinfo(member).file_size > _MAX_ARTIFACT_BYTES:
+        tag = f"{RELEASE_TAG_PREFIX}{correlation_id}"
+        deadline = time.monotonic() + appear_timeout
+        last = ""
+        while True:
+            try:
+                resp = self._session.get(self._url(f"/releases/tags/{tag}"), timeout=30)
+            except requests.RequestException as exc:
+                last = str(exc)
+            else:
+                if resp.status_code == 200:
+                    assets = resp.json().get("assets", [])
+                    url = assets[0].get("browser_download_url") if assets else None
+                    if not url:
+                        raise ArtifactError(
+                            f"the run's CWL release '{tag}' has no downloadable asset"
+                        )
+                    return url
+                if resp.status_code == 404:
+                    last = "404 (release not yet visible)"
+                elif resp.status_code in _RETRYABLE_STATUS or self._is_rate_limited(resp):
+                    last = f"{resp.status_code}: {resp.text.strip()[:200]}"
+                else:
+                    raise ArtifactError(
+                        f"could not read CWL release '{tag}' "
+                        f"({resp.status_code}): {resp.text.strip()[:200]}"
+                    )
+            if time.monotonic() >= deadline:
                 raise ArtifactError(
-                    f"artifact member '{member}' exceeds the {_MAX_ARTIFACT_BYTES}-byte cap"
+                    f"CWL release '{tag}' did not appear within {appear_timeout}s: {last}"
                 )
-            with archive.open(member) as handle:
-                # ...and cap the actual read in case the header under-reports (bomb).
-                data = handle.read(_MAX_ARTIFACT_BYTES + 1)
-            if len(data) > _MAX_ARTIFACT_BYTES:
-                raise ArtifactError("artifact member exceeds the size cap")
-            safe_name = member.replace("\\", "/").rsplit("/", 1)[-1] or "processor.cwl"
-            return safe_name, data
+            time.sleep(3)

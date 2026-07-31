@@ -24,9 +24,12 @@ DEFAULT_PIPELINE_REPO = "cgi-italy/insula-processor-launcher"
 # File name of the orchestrator workflow inside .github/workflows/ of the repo above.
 DEFAULT_WORKFLOW = "build-external.yml"
 
-# Name of the artifact the orchestrator uploads, containing the processor CWL
-# with the published image reference already injected.
-CWL_ARTIFACT_NAME = "cwl"
+# The orchestrator publishes the finalized CWL (published image already injected)
+# as a GitHub Release on the launcher repo, tagged with this prefix + the run's
+# correlation_id. The CLI looks the release up by that tag and reads the asset's
+# public download URL, which it hands to Insula as the deploy reference (Insula
+# fetches the CWL from that URL server-side).
+RELEASE_TAG_PREFIX = "cwl-"
 
 # workflow_dispatch input names the orchestrator must accept. Kept here so the
 # CLI and the workflow cannot drift silently.
@@ -64,14 +67,10 @@ class Settings:
     pipeline_ref: str = "main"
     # OGC API - Processes deploy endpoint (Part 2 DRU). Default set for Insula.
     publish_endpoint: Optional[str] = "https://insula.earth/ogcapi/processes"
-    # How the api token is attached to the publish request.
-    auth_header: str = "Authorization"
-    auth_format: str = "Apikey {token}"
-    # "raw" posts the CWL as the request body (OGC API - Processes default);
-    # "multipart" posts it as a file field named upload_field.
-    upload_mode: str = "raw"
-    content_type: str = "application/cwl+yaml"
-    upload_field: str = "file"
+    # The deploy request is fixed: a POST of an ogcapppkg JSON document referencing
+    # the CWL by URL (executionUnit.href), with header Authorization: Apikey <token>
+    # and Content-Type application/ogcapppkg+json. Neither is configurable (see
+    # publish.publish_cwl / publish._CONTENT_TYPE).
     # Verify the TLS certificate of the publish endpoint. Disable (--insecure) when a
     # corporate TLS-inspecting proxy or an internal CA re-signs the connection with a
     # certificate the CLI cannot verify.
@@ -108,12 +107,12 @@ def token_cache_path() -> str:
 
 def merge_settings(base: Settings, data: dict) -> Settings:
     """Overlay a parsed config dict onto Settings, ignoring unknown keys."""
-    known = {f.name for f in field_names(base)}
+    known = {f.name for f in _settings_fields(base)}
     updates = {k: v for k, v in data.items() if k in known}
     return Settings(**{**base.__dict__, **updates})
 
 
-def field_names(settings: Settings):
+def _settings_fields(settings: Settings):
     from dataclasses import fields
 
     return fields(settings)
