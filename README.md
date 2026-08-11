@@ -22,6 +22,40 @@ lives in a cgi-italy repo you cannot alter; you are granted access only to
 - Base images must be public (the launcher is public, so no private base-image
   credentials are ever passed as workflow inputs).
 
+## Prerequisites: Python 3.11+ and pipx
+
+The CLI is installed with [pipx](https://pipx.pypa.io), which puts it in its own
+virtual environment and on your PATH. If `pipx --version` already prints a version,
+skip to [Install](#install).
+
+**Windows**
+
+```
+winget install -e --id Python.Python.3.12   # only if `py --version` fails
+py -m pip install --user pipx
+py -m pipx ensurepath
+```
+
+Close and reopen the terminal (`ensurepath` edits your PATH; the current window
+does not see it), then check `pipx --version`. If the command is still not found,
+use `py -m pipx ...` in place of `pipx ...`.
+Scoop users can instead run `scoop install pipx`.
+
+**Linux**
+
+```
+sudo apt install pipx        # Debian 12+ / Ubuntu 23.04+
+sudo dnf install pipx        # Fedora
+python3 -m pip install --user pipx   # any other distro (needs python3 3.11+)
+
+pipx ensurepath
+exec $SHELL                  # reload PATH in the current shell
+```
+
+Check with `pipx --version`. On older distributions whose `python3` is below 3.11,
+install a newer Python first (for example `sudo apt install python3.11`) and use
+`python3.11 -m pip install --user pipx`.
+
 ## Install
 
 Requires Python 3.11+. The CLI is not on PyPI; install straight from the repo:
@@ -29,6 +63,10 @@ Requires Python 3.11+. The CLI is not on PyPI; install straight from the repo:
 ```
 pipx install git+https://github.com/cgi-italy-insula-processors/insula-processors-builder-cli
 ```
+
+Upgrade later with `pipx upgrade insula-processors-builder-cli`,
+remove it with `pipx uninstall insula-processors-builder-cli`,
+force reinstall with `pipx install -f insula-processors-builder-cli`.
 
 ## Authenticate
 
@@ -47,21 +85,31 @@ The login token expires after about 8 hours; when a `create` fails with an auth
 error, run `login` again. To avoid re-logging in, set a fine-grained PAT instead
 (Actions: read/write on the launcher repo only): `export INSULA_GITHUB_TOKEN=github_pat_...`.
 
-## Configure
+## Store your Insula api token
 
-Copy `config.example.toml` to `~/.config/insula-processors-builder/config.toml` only to
-override a default such as the publish endpoint. The deploy Content-Type
-(`application/ogcapppkg+json`) and `Authorization: Apikey` scheme are fixed, not
-configurable, and secrets are never stored in the config file. Generate an api token at
-https://insula.earth/awareness/account/api_keys, then provide it via env:
+The CWL deploy authenticates with an Insula api token (generate one at
+https://insula.earth/awareness/account/api_keys). Store it once; the CLI then uses
+it automatically:
 
 ```
-export INSULA_API_TOKEN="..."   # your insula.earth api token, for the CWL deploy
+insula-processors-builder set-api-token
 ```
 
-Wrap the token value in double quotes: without them the shell can break on special
-characters in the key. Missing secrets are prompted for interactively; a token you
-type or paste at the prompt is NOT shown in the terminal.
+The command asks for the token and does not echo it, so the value never passes
+through your shell (api tokens contain characters a shell would otherwise mangle
+unless carefully quoted). It is written to
+`~/.config/insula-processors-builder/api-token` with mode 0600. Remove it with
+`insula-processors-builder clear-api-token`.
+
+Alternatives, in the order the CLI tries them: `--api-token <value>`, the
+`INSULA_API_TOKEN` environment variable (quote the value: `export
+INSULA_API_TOKEN="..."`), the stored token, then an interactive prompt.
+
+There is **no settings file to edit**: every other setting is a built-in default you
+can override with a command-line flag (`--endpoint`, `--insecure`, `--poll-timeout`,
+`--poll-interval`, `--pipeline-repo`, `--workflow`, `--app-client-id`). The deploy
+Content-Type (`application/ogcapppkg+json`) and `Authorization: Apikey` scheme are
+fixed, not configurable.
 
 ## Use
 
@@ -109,17 +157,16 @@ the launcher repo). Deploy it under your OWN api token, with no rebuild:
 insula-processors-builder deploy --cwl-url https://github.com/cgi-italy/insula-processor-launcher/releases/download/cwl-<id>/<app>-<sha8>.cwl
 ```
 
-Generate the api token at https://insula.earth/awareness/account/api_keys. Set
-`INSULA_API_TOKEN` (in double quotes) or let the CLI prompt for it; a typed or pasted
-token is not shown in the terminal. The token is used only for this local POST and is
-never sent to GitHub.
+Generate the api token at https://insula.earth/awareness/account/api_keys and store it
+with `insula-processors-builder set-api-token` (or set `INSULA_API_TOKEN`, or let the
+CLI prompt for it; a typed or pasted token is not shown in the terminal). The token is
+used only for this local POST and is never sent to GitHub.
 
 ## Behind a corporate TLS-inspecting proxy
 
 Corporate firewalls that inspect TLS re-sign HTTPS connections with an internal CA the
 CLI does not trust, so the deploy POST fails with a certificate verification error. Pass `--insecure` (on `create` or `deploy`) to skip
-verification for that request, or set `verify_tls = false` in the config file. This
-affects only the deploy endpoint, not GitHub.
+verification for that request. This affects only the deploy endpoint, not GitHub.
 
 ```
 insula-processors-builder deploy --cwl-url <url> --insecure
@@ -132,18 +179,22 @@ The cleaner alternative, if your IT provides the proxy's root CA bundle, is to p
 
 | Command | Purpose | Key flags |
 |---------|---------|-----------|
-| `login` | Cache a GitHub device-flow token | `--app-client-id`, `--config` |
+| `login` | Cache a GitHub device-flow token | `--app-client-id` |
 | `logout` | Remove the cached login token | - |
+| `set-api-token` | Store the Insula api token locally (mode 0600) | `--api-token` (otherwise asked for, never echoed) |
+| `clear-api-token` | Remove the stored Insula api token | - |
 | `validate --cwl <file>` | Check a local .cwl (with `__IMAGE__`) before building | - |
-| `create --repo-url <url>` | Build a processor repo and deploy its CWL | `--ref`, `--no-publish`, `--endpoint`, `--insecure`, `--bypass`, `--force-publish`, `--pipeline-repo`, `--workflow`, `--github-token`, `--api-token`, `--config` |
-| `deploy --cwl-url <url>` | Deploy an already-published CWL by its URL | `--endpoint`, `--insecure`, `--api-token`, `--config` |
+| `create --repo-url <url>` | Build a processor repo and deploy its CWL | `--ref`, `--no-publish`, `--endpoint`, `--insecure`, `--bypass`, `--force-publish`, `--poll-timeout`, `--poll-interval`, `--pipeline-repo`, `--workflow`, `--github-token`, `--api-token` |
+| `deploy --cwl-url <url>` | Deploy an already-published CWL by its URL | `--endpoint`, `--insecure`, `--api-token` |
 
 Environment variables: `INSULA_GITHUB_TOKEN` (GitHub token, skips `login`),
 `INSULA_API_TOKEN` (Insula deploy token), `INSULA_GITHUB_APP_CLIENT_ID`,
-`XDG_CONFIG_HOME` (config dir), `REQUESTS_CA_BUNDLE` (custom CA bundle).
+`XDG_CONFIG_HOME` (where the two token files live), `REQUESTS_CA_BUNDLE` (custom CA
+bundle).
 
 Token resolution: GitHub token = `--github-token` > `INSULA_GITHUB_TOKEN` > cached
-`login`. api token = `--api-token` > `INSULA_API_TOKEN` > interactive prompt.
+`login`. api token = `--api-token` > `INSULA_API_TOKEN` > stored `set-api-token` >
+interactive prompt.
 
 Exit codes: `0` success, `1` handled error, `2` no subcommand (help printed),
 `130` interrupted. `create --no-publish` prints the published CWL URL on stdout (all

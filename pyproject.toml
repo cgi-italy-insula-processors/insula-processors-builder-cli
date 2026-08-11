@@ -7,7 +7,6 @@ name = "insula-processors-builder-cli"
 version = "0.1.0"
 description = "Launch the cgi-italy processor build pipeline for a public processor repo and publish its CWL."
 readme = "README.md"
-# 3.11+: the config loader uses the stdlib tomllib (no tomli fallback).
 requires-python = ">=3.11"
 # Matches the LICENSE file (the Insula platform is AGPL).
 license = { text = "AGPL-3.0-or-later" }

@@ -25,6 +25,32 @@ def test_save_token_is_0600(tmp_path, monkeypatch):
     assert os.stat(config.token_cache_path()).st_mode & 0o777 == 0o600
 
 
+def test_api_token_save_load_clear_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    auth.save_api_token("api-tok")
+    assert auth.load_api_token() == "api-tok"
+    auth.clear_api_token()
+    assert auth.load_api_token() == ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+def test_save_api_token_is_0600(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    auth.save_api_token("api-tok")
+    assert os.stat(config.api_token_path()).st_mode & 0o777 == 0o600
+
+
+def test_api_token_file_is_separate_from_login_token(tmp_path, monkeypatch):
+    # The Insula api token must never be mistaken for the GitHub login token:
+    # different files, cleared independently.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    auth.save_token("gh-tok")
+    auth.save_api_token("api-tok")
+    assert config.api_token_path() != config.token_cache_path()
+    auth.clear_token()
+    assert auth.load_api_token() == "api-tok"
+
+
 def test_load_missing_token_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert auth.load_cached_token() == ""

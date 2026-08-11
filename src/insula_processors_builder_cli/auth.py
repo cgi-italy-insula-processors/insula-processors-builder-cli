@@ -81,8 +81,7 @@ def device_login(client_id: Optional[str]) -> str:
     raise CliError("login timed out; run `insula-processors-builder login` again")
 
 
-def save_token(token: str) -> None:
-    path = config.token_cache_path()
+def _write_secret(path: str, value: str) -> None:
     directory = os.path.dirname(path)
     # 0700 so a co-located user cannot even list the token filename. makedirs'
     # mode is ignored when the dir already exists, so also chmod explicitly.
@@ -91,11 +90,10 @@ def save_token(token: str) -> None:
     # Create with 0600 before writing so the token is never briefly world-readable.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(token)
+        handle.write(value)
 
 
-def load_cached_token() -> str:
-    path = config.token_cache_path()
+def _read_secret(path: str) -> str:
     try:
         with open(path, encoding="utf-8") as handle:
             return handle.read().strip()
@@ -103,8 +101,37 @@ def load_cached_token() -> str:
         return ""
 
 
-def clear_token() -> None:
+def _remove_secret(path: str) -> None:
     try:
-        os.remove(config.token_cache_path())
+        os.remove(path)
     except FileNotFoundError:
         pass
+
+
+def save_token(token: str) -> None:
+    _write_secret(config.token_cache_path(), token)
+
+
+def load_cached_token() -> str:
+    return _read_secret(config.token_cache_path())
+
+
+def clear_token() -> None:
+    _remove_secret(config.token_cache_path())
+
+
+def save_api_token(token: str) -> None:
+    """Store the Insula api token as a single-line file (mode 0600).
+
+    A stored token keeps the value out of the shell entirely: api tokens carry
+    characters a shell would mangle unless carefully quoted.
+    """
+    _write_secret(config.api_token_path(), token)
+
+
+def load_api_token() -> str:
+    return _read_secret(config.api_token_path())
+
+
+def clear_api_token() -> None:
+    _remove_secret(config.api_token_path())

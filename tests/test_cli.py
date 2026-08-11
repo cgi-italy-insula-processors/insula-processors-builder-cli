@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 
-from insula_processors_builder_cli import cli, config
+from insula_processors_builder_cli import auth, cli, config
 from insula_processors_builder_cli.errors import CliError, PublishError
 
 
@@ -112,7 +114,7 @@ def _prep_create(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "fetch_cwl", lambda settings, url: _FAKE_CWL)
     monkeypatch.setenv(config.ENV_GITHUB_TOKEN, "gh-token")
     monkeypatch.setenv(config.ENV_API_TOKEN, "api-token")
-    # Isolate from any real ~/.config/insula-processors-builder/config.toml.
+    # Isolate from any real ~/.config/insula-processors-builder/ token files.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
 
@@ -211,3 +213,54 @@ def test_deploy_rejects_bad_endpoint(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv(config.ENV_API_TOKEN, "api-token")
     assert cli.main(["deploy", "--cwl-url", "https://x/app.cwl", "--endpoint", "notaurl"]) == 1
+
+
+def test_set_and_clear_api_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert cli.main(["set-api-token", "--api-token", "  stored-tok  "]) == 0
+    assert auth.load_api_token() == "stored-tok"
+    assert cli.main(["clear-api-token"]) == 0
+    assert auth.load_api_token() == ""
+
+
+def test_set_api_token_rejects_empty(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert cli.main(["set-api-token", "--api-token", "   "]) == 1
+
+
+def test_api_token_resolution_order(monkeypatch, tmp_path):
+    """--api-token > INSULA_API_TOKEN > the stored file (the settings TOML is gone,
+    so the stored file is the only on-disk source)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv(config.ENV_API_TOKEN, raising=False)
+    auth.save_api_token("from-file")
+    args = argparse.Namespace(api_token=None)
+    assert cli._resolve_api_token(args) == "from-file"
+
+    monkeypatch.setenv(config.ENV_API_TOKEN, "from-env")
+    assert cli._resolve_api_token(args) == "from-env"
+
+    assert cli._resolve_api_token(argparse.Namespace(api_token="from-flag")) == "from-flag"
+
+
+def test_deploy_uses_stored_api_token(monkeypatch, tmp_path):
+    # No env var, no flag: the stored token must reach the deploy POST.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv(config.ENV_API_TOKEN, raising=False)
+    auth.save_api_token("stored-tok")
+    monkeypatch.setattr(cli, "fetch_cwl", lambda settings, url: _FAKE_CWL)
+    captured = {}
+    monkeypatch.setattr(
+        cli, "publish_cwl", lambda settings, tok, url: captured.update(tok=tok) or "ok"
+    )
+
+    assert cli.main(["deploy", "--cwl-url", "https://x/app.cwl"]) == 0
+    assert captured["tok"] == "stored-tok"
+
+
+def test_config_flag_is_gone(monkeypatch, tmp_path):
+    # The TOML settings file was dropped: --config must be an unknown flag (exit 2),
+    # not silently accepted.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    with pytest.raises(SystemExit):
+        cli.main(["deploy", "--cwl-url", "https://x/app.cwl", "--config", "x.toml"])

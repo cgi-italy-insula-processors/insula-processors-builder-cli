@@ -55,7 +55,9 @@ ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
 
 @dataclass
 class Settings:
-    """Non-secret settings. Secrets are resolved separately and not stored here."""
+    """Non-secret settings. There is NO settings config file: every value below is
+    a built-in default overridable by a command-line flag. The only thing stored on
+    disk is the api token (see api_token_path), so users never hand-edit config."""
 
     pipeline_repo: str = DEFAULT_PIPELINE_REPO
     workflow: str = DEFAULT_WORKFLOW
@@ -75,18 +77,11 @@ class Settings:
     # corporate TLS-inspecting proxy or an internal CA re-signs the connection with a
     # certificate the CLI cannot verify.
     verify_tls: bool = True
+    # Overridable with --poll-timeout / --poll-interval on `create`.
     poll_timeout_seconds: int = 1800
     poll_interval_seconds: int = 10
     # GitHub App client id for `login` (device flow); empty = not configured.
     app_client_id: str = DEFAULT_APP_CLIENT_ID
-
-
-def load_config_file(path: str) -> dict:
-    """Load a TOML config file (Python 3.11+; tomllib is in the stdlib)."""
-    import tomllib
-
-    with open(path, "rb") as handle:
-        return tomllib.load(handle)
 
 
 def _config_dir() -> str:
@@ -96,23 +91,13 @@ def _config_dir() -> str:
     return os.path.join(base, "insula-processors-builder")
 
 
-def default_config_path() -> str:
-    return os.path.join(_config_dir(), "config.toml")
-
-
 def token_cache_path() -> str:
     """Where `login` stores the device-flow access token (mode 0600)."""
     return os.path.join(_config_dir(), "token")
 
 
-def merge_settings(base: Settings, data: dict) -> Settings:
-    """Overlay a parsed config dict onto Settings, ignoring unknown keys."""
-    known = {f.name for f in _settings_fields(base)}
-    updates = {k: v for k, v in data.items() if k in known}
-    return Settings(**{**base.__dict__, **updates})
-
-
-def _settings_fields(settings: Settings):
-    from dataclasses import fields
-
-    return fields(settings)
+def api_token_path() -> str:
+    """Where `set-api-token` stores the Insula api token (mode 0600). A plain
+    single-line file, not TOML: the token holds characters a shell (and a TOML
+    string) would mangle, and users must never hand-edit config."""
+    return os.path.join(_config_dir(), "api-token")

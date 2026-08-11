@@ -1,6 +1,7 @@
 """Command-line entry point.
 
   insula-processors-builder login
+  insula-processors-builder set-api-token
   insula-processors-builder create --repo-url https://github.com/<you>/<processor> [options]
 
 Creates a processor on the platform end to end: triggers the cgi-italy pipeline
@@ -30,15 +31,32 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def _resolve_secret(flag_value: Optional[str], env_name: str, prompt: str) -> str:
-    if flag_value:
-        return flag_value
-    env_value = os.environ.get(env_name)
+_API_TOKEN_PROMPT = (
+    "Provide Insula API Token (input hidden; generate one at "
+    "https://insula.earth/awareness/account/api_keys): "
+)
+
+
+def _resolve_api_token(args: argparse.Namespace) -> str:
+    """Order: --api-token, INSULA_API_TOKEN, the `set-api-token` file, then prompt.
+
+    The stored file is the recommended path: the token holds characters a shell
+    would mangle, and a hidden prompt / stored file never goes through the shell.
+    """
+    if getattr(args, "api_token", None):
+        return args.api_token
+    env_value = os.environ.get(config.ENV_API_TOKEN)
     if env_value:
         return env_value
+    stored = auth.load_api_token()
+    if stored:
+        return stored
     if not sys.stdin.isatty():
-        raise CliError(f"missing secret: set {env_name} or pass it as a flag")
-    return getpass.getpass(prompt)
+        raise CliError(
+            "no Insula api token: run `insula-processors-builder set-api-token`, set "
+            f"{config.ENV_API_TOKEN}, or pass --api-token"
+        )
+    return getpass.getpass(_API_TOKEN_PROMPT)
 
 
 def _resolve_github_token(args: argparse.Namespace) -> str:
@@ -66,21 +84,10 @@ def _resolve_app_client_id(args: argparse.Namespace, settings: Settings) -> Opti
 
 
 def _build_settings(args: argparse.Namespace) -> Settings:
+    """Built-in defaults overridden by command-line flags only. There is no
+    settings file: the sole thing on disk is the api token (`set-api-token`)."""
     settings = Settings()
-    path = getattr(args, "config", None) or (
-        config.default_config_path()
-        if os.path.exists(config.default_config_path())
-        else None
-    )
-    if path:
-        try:
-            data = config.load_config_file(path)
-        except (OSError, ValueError) as exc:
-            # ValueError covers tomllib.TOMLDecodeError; keep it a clean CliError.
-            raise CliError(f"cannot read config file {path}: {exc}") from exc
-        settings = config.merge_settings(settings, data)
-    # Explicit flags win over the config file.
-    for name in ("pipeline_repo", "workflow"):
+    for name in ("pipeline_repo", "workflow", "poll_timeout_seconds", "poll_interval_seconds"):
         value = getattr(args, name, None)
         if value:
             setattr(settings, name, value)
@@ -90,11 +97,7 @@ def _build_settings(args: argparse.Namespace) -> Settings:
         _validate_url(settings.publish_endpoint, "publish endpoint")
     if getattr(args, "insecure", False):
         settings.verify_tls = False
-    # Warn whenever verification is off, no matter the source: a config-file
-    # verify_tls=false must not silently disable TLS on the token-bearing POST.
-    if not settings.verify_tls:
-        source = "--insecure" if getattr(args, "insecure", False) else "verify_tls=false in config"
-        _log(f"warning: TLS verification disabled for the deploy endpoint ({source})")
+        _log("warning: TLS verification disabled for the deploy endpoint (--insecure)")
     return settings
 
 
@@ -191,6 +194,27 @@ def _cmd_logout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_set_api_token(args: argparse.Namespace) -> int:
+    """Store the Insula api token so it never has to be typed into a shell."""
+    token = args.api_token
+    if not token:
+        if not sys.stdin.isatty():
+            raise CliError(f"no token given: pass --api-token or set {config.ENV_API_TOKEN}")
+        token = getpass.getpass(_API_TOKEN_PROMPT)
+    token = token.strip()
+    if not token:
+        raise CliError("empty token; nothing stored")
+    auth.save_api_token(token)
+    _log(f"Insula api token stored in {config.api_token_path()} (mode 0600).")
+    return 0
+
+
+def _cmd_clear_api_token(args: argparse.Namespace) -> int:
+    auth.clear_api_token()
+    _log("Stored Insula api token removed.")
+    return 0
+
+
 def _deploy_url(settings: Settings, api_token: str, cwl_url: str) -> int:
     """Lint the referenced CWL, then deploy it by URL. Shared by create and deploy."""
     _validate_url(cwl_url, "CWL URL")
@@ -208,12 +232,7 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     URL. Used when a maintainer produced the CWL via a --bypass build and shares
     the release URL for you to deploy under your own api token."""
     settings = _build_settings(args)
-    api_token = _resolve_secret(
-        args.api_token,
-        config.ENV_API_TOKEN,
-        "Provide Insula API Token (input hidden; generate one at "
-        "https://insula.earth/awareness/account/api_keys): ",
-    )
+    api_token = _resolve_api_token(args)
     return _deploy_url(settings, api_token, args.cwl_url)
 
 
@@ -273,12 +292,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     # spending a full pipeline run on a missing credential.
     api_token = None
     if not no_publish:
-        api_token = _resolve_secret(
-            args.api_token,
-            config.ENV_API_TOKEN,
-            "Provide Insula API Token (input hidden; generate one at "
-            "https://insula.earth/awareness/account/api_keys): ",
-        )
+        api_token = _resolve_api_token(args)
 
     client = GitHubClient(github_token, settings.pipeline_repo)
     cwl_url = _dispatch_and_collect(client, settings, args)
@@ -311,11 +325,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
     login = sub.add_parser("login", help="authenticate via GitHub device flow (no PAT needed)", allow_abbrev=False)
     login.add_argument("--app-client-id", help=f"prefer the {config.ENV_APP_CLIENT_ID} env var")
-    login.add_argument("--config", help="path to a TOML config file")
     login.set_defaults(func=_cmd_login)
 
     logout = sub.add_parser("logout", help="remove the cached login token", allow_abbrev=False)
     logout.set_defaults(func=_cmd_logout)
+
+    set_token = sub.add_parser(
+        "set-api-token", help="store your Insula api token locally (asked for, never echoed)",
+        allow_abbrev=False,
+    )
+    set_token.add_argument("--api-token", help="pass the token instead of being prompted for it")
+    set_token.set_defaults(func=_cmd_set_api_token)
+
+    clear_token = sub.add_parser(
+        "clear-api-token", help="remove the stored Insula api token", allow_abbrev=False
+    )
+    clear_token.set_defaults(func=_cmd_clear_api_token)
 
     val = sub.add_parser(
         "validate", help="check a local .cwl for the Insula structure before building",
@@ -332,7 +357,6 @@ def _build_parser() -> argparse.ArgumentParser:
     dep.add_argument("--endpoint", help="override the CWL publish endpoint")
     dep.add_argument("--api-token", help=f"prefer the {config.ENV_API_TOKEN} env var")
     dep.add_argument("--insecure", action="store_true", help="skip TLS verification of the deploy endpoint (behind a corporate TLS-inspecting proxy)")
-    dep.add_argument("--config", help="path to a TOML config file")
     dep.set_defaults(func=_cmd_deploy)
 
     run = sub.add_parser(
@@ -350,7 +374,14 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--api-token", help=f"prefer the {config.ENV_API_TOKEN} env var")
     run.add_argument("--no-publish", action="store_true", help="build only; print the published CWL URL and skip the deploy")
     run.add_argument("--insecure", action="store_true", help="skip TLS verification of the deploy endpoint (behind a corporate TLS-inspecting proxy)")
-    run.add_argument("--config", help="path to a TOML config file")
+    run.add_argument(
+        "--poll-timeout", dest="poll_timeout_seconds", type=int,
+        help=f"seconds to wait for the pipeline run (default: {Settings.poll_timeout_seconds})",
+    )
+    run.add_argument(
+        "--poll-interval", dest="poll_interval_seconds", type=int,
+        help=f"seconds between run status checks (default: {Settings.poll_interval_seconds})",
+    )
     run.set_defaults(func=_cmd_create)
     return parser
 
