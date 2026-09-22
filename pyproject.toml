@@ -13,6 +13,9 @@ license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "CGI Italy" }]
 dependencies = [
     "requests>=2.31,<3",
+    # Needed by cwlcheck: the platform rejects a bad CWL with an empty 400 body, so
+    # the local checks have to parse the document rather than grep it.
+    "PyYAML>=6,<7",
 ]
 
 [project.optional-dependencies]

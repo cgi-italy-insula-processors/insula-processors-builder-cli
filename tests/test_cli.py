@@ -49,24 +49,63 @@ def test_validate_repo_url_rejects(url):
         cli._validate_repo_url(url)
 
 
-def test_lint_cwl_accepts_minimal():
-    cwl = b"""$graph:
+# A complete, valid Application Package: the checks now parse the document, so a
+# fixture has to be structurally real (ids, a step, matching inputs/outputs).
+_CWL_TEMPLATE = """cwlVersion: v1.2
+$graph:
 - class: Workflow
+  id: tiny
+  label: Tiny
+  doc: {doc}
+  inputs:
+    input:
+      type: Directory
+  outputs:
+    output:
+      type: Directory
+      outputSource: process/output
+  steps:
+    process:
+      run: '#main'
+      in:
+        input: input
+      out:
+        - output
 - class: CommandLineTool
+  id: main
   requirements:
     DockerRequirement:
-      dockerPull: swr.example/eopaas/eopaas/foo:abc12345
+      dockerPull: {image}
+  baseCommand: run.sh
+  inputs:
+    input:
+      type: Directory
+      inputBinding:
+        position: 1
+  outputs:
+    output:
+      type: Directory
+      outputBinding:
+        glob: ./outDir/output/
 """
-    cli._lint_cwl(cwl)
+
+
+def _cwl(image: str = "reg/eopaas/eopaas/foo:abc12345", doc: str = "A tiny processor.") -> bytes:
+    return _CWL_TEMPLATE.format(image=image, doc=doc).encode("utf-8")
+
+
+def test_lint_cwl_accepts_finalized():
+    cli._lint_cwl(_cwl())
 
 
 @pytest.mark.parametrize(
     "cwl",
     [
-        b"class: Workflow\nclass: CommandLineTool\ndockerPull: __IMAGE__\n",  # token left
-        b"class: Workflow\ndockerPull: x\n",  # missing CommandLineTool
-        b"class: Workflow\nclass: CommandLineTool\n",  # missing dockerPull
-        b"class: Workflow\nclass: Workflow\nclass: CommandLineTool\ndockerPull: x\n",  # two Workflows
+        _cwl(image="__IMAGE__"),  # token left: the image was never injected
+        _cwl().replace(b"- class: CommandLineTool\n", b""),  # no CommandLineTool
+        _cwl().replace(b"      dockerPull: reg/eopaas/eopaas/foo:abc12345\n", b""),
+        _cwl().replace(b"- class: Workflow\n", b"- class: Workflow\n- class: Workflow\n"),
+        _cwl(doc="x" * 256),  # over the platform's description cap
     ],
 )
 def test_lint_cwl_rejects(cwl):
@@ -74,25 +113,25 @@ def test_lint_cwl_rejects(cwl):
         cli._lint_cwl(cwl)
 
 
-_FAKE_CWL = (
-    b"$graph:\n"
-    b"- class: Workflow\n"
-    b"- class: CommandLineTool\n"
-    b"  requirements:\n"
-    b"    DockerRequirement:\n"
-    b"      dockerPull: reg/eopaas/eopaas/foo:abc12345\n"
-)
+_FAKE_CWL = _cwl()
 
 
 _FAKE_URL = "https://github.com/cgi-italy/insula-processor-launcher/releases/download/cwl-x/app.cwl"
 
 
 class _FakeGitHubClient:
+    dispatched = False
+    source_cwl = None
+
     def __init__(self, token, repo):
         pass
 
+    def read_source_cwl(self, ref):
+        # `create` reads the processor repo's .cwl before dispatching.
+        return "app.cwl", (type(self).source_cwl or _AUTHOR_CWL)
+
     def dispatch(self, workflow, ref, inputs):
-        pass
+        type(self).dispatched = True
 
     def find_run(self, workflow, correlation_id):
         return 1
@@ -108,6 +147,8 @@ class _FakeGitHubClient:
 
 
 def _prep_create(monkeypatch, tmp_path):
+    _FakeGitHubClient.dispatched = False
+    _FakeGitHubClient.source_cwl = None
     monkeypatch.setattr(cli, "GitHubClient", _FakeGitHubClient)
     # The CWL is fetched (for the local lint) from its published URL, not downloaded
     # as an artifact; stub the fetch so no network is touched.
@@ -159,6 +200,27 @@ def test_create_bypass_skips_deploy(monkeypatch, tmp_path, capsys):
     assert capsys.readouterr().out.strip() == _FAKE_URL
 
 
+def test_create_checks_source_cwl_before_dispatching(monkeypatch, tmp_path, capsys):
+    # A bad CWL must stop `create` BEFORE the pipeline runs: the build would only
+    # fail at the very end, on a deploy whose 400 carries no reason.
+    _prep_create(monkeypatch, tmp_path)
+    _FakeGitHubClient.source_cwl = _cwl(image="__IMAGE__", doc="x" * 256)
+
+    rc = cli.main(["create", "--repo-url", "https://github.com/o/r"])
+
+    assert rc == 1
+    assert _FakeGitHubClient.dispatched is False
+    assert "caps the process description at 255" in capsys.readouterr().err
+
+
+def test_create_dispatches_when_source_cwl_is_valid(monkeypatch, tmp_path):
+    _prep_create(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "publish_cwl", lambda settings, tok, url: "ok")
+
+    assert cli.main(["create", "--repo-url", "https://github.com/o/r"]) == 0
+    assert _FakeGitHubClient.dispatched is True
+
+
 def test_deploy_by_url_posts_that_url(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv(config.ENV_API_TOKEN, "api-token")
@@ -180,14 +242,7 @@ def test_deploy_rejects_abbreviated_cwl_flag(monkeypatch, tmp_path):
         cli.main(["deploy", "--cwl", "https://x/app.cwl"])
 
 
-_AUTHOR_CWL = (
-    b"$graph:\n"
-    b"- class: Workflow\n"
-    b"- class: CommandLineTool\n"
-    b"  requirements:\n"
-    b"    DockerRequirement:\n"
-    b"      dockerPull: __IMAGE__\n"
-)
+_AUTHOR_CWL = _cwl(image="__IMAGE__")
 
 
 def test_validate_accepts_author_cwl(tmp_path):

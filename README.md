@@ -183,7 +183,7 @@ The cleaner alternative, if your IT provides the proxy's root CA bundle, is to p
 | `logout` | Remove the cached login token | - |
 | `set-api-token` | Store the Insula api token locally (mode 0600) | `--api-token` (otherwise asked for, never echoed) |
 | `clear-api-token` | Remove the stored Insula api token | - |
-| `validate --cwl <file>` | Check a local .cwl (with `__IMAGE__`) before building | - |
+| `validate --cwl <file>` | Run the [CWL checks](#cwl-checks-run-locally-before-anything-is-built) on a local .cwl (with `__IMAGE__`) before building | - |
 | `create --repo-url <url>` | Build a processor repo and deploy its CWL | `--ref`, `--no-publish`, `--endpoint`, `--insecure`, `--bypass`, `--force-publish`, `--poll-timeout`, `--poll-interval`, `--pipeline-repo`, `--workflow`, `--github-token`, `--api-token` |
 | `deploy --cwl-url <url>` | Deploy an already-published CWL by its URL | `--endpoint`, `--insecure`, `--api-token` |
 
@@ -200,8 +200,48 @@ Exit codes: `0` success, `1` handled error, `2` no subcommand (help printed),
 `130` interrupted. `create --no-publish` prints the published CWL URL on stdout (all
 other logs go to stderr), so it is safe to capture in a script.
 
+## CWL checks (run locally, before anything is built)
+
+`create` reads the `.cwl` straight from your repo at the ref it is about to build
+and checks it BEFORE dispatching the pipeline; `validate --cwl <file>` runs the same
+checks on a local file. A finding stops the command and lists every problem.
+
+This matters because Insula rejects a malformed Application Package with an HTTP 400
+that carries NO reason (the explanation stays in the platform's server logs). Without
+these local checks you would learn only "400 BAD_REQUEST" - after a full build, scan
+and publish cycle.
+
+What is checked, mirroring the platform's own rules:
+
+- exactly one `Workflow` and one `CommandLineTool` in `$graph`, both with an `id`
+- exactly one step, whose `run` references the CommandLineTool id
+- `DockerRequirement.dockerPull` present, and still the bare `__IMAGE__` token
+  before a build (the pipeline injects the published image there)
+- only the supported CommandLineTool requirements (`DockerRequirement`,
+  `ResourceRequirement`, `NetworkAccess`, `EnvVarRequirement`,
+  `InitialWorkDirRequirement`), each `InitialWorkDirRequirement` Directory carrying a
+  `location` and a relative `basename`
+- the Workflow `doc` is a single string of at most 255 characters (it becomes the
+  process description, which the platform caps)
+- every type is a real CWL type, spelled exactly: `string`, `int`, `long`, `float`,
+  `double`, `boolean`, `File`, `Directory`, an enum or an array of those. `String`
+  is not `string`
+- the Workflow and the CommandLineTool declare the SAME type for each input (with
+  `scatter`, the Workflow side is the array of the tool side)
+- inputs and outputs line up across Workflow, step and CommandLineTool
+- outputs are `File` or `Directory` only
+- with `scatter`: `scatterMethod: dotproduct`, an array scatter input, array outputs
+- no duplicate keys anywhere (the platform's YAML parser rejects them)
+
+Rules that depend on platform state - whether a process of that name already exists,
+whether a named user mount is known - cannot be checked locally and are still only
+enforced on deploy.
+
 ## What a run does
 
+0. Reads the single `.cwl` from your repo (root or one directory down, the same
+   lookup the pipeline uses) and runs the checks above. Nothing is dispatched if it
+   fails.
 1. Triggers the launcher workflow (`workflow_dispatch`).
 2. Waits while the pipeline clones your repo, secret-scans, builds, security-scans,
    and publishes the image.

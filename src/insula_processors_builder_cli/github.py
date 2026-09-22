@@ -4,14 +4,16 @@ Capabilities used, all backed by an Actions:write fine-grained PAT:
   - trigger workflow_dispatch
   - read workflow runs
   - read the finalized-CWL release (public read) to get its download URL
+  - read the processor repo's .cwl before dispatch (public read) to check it
 The token needs Actions: write to dispatch; it needs NO Contents permission, so it
 cannot push code or alter workflows (reading a public repo's release needs no scope).
 """
 
 from __future__ import annotations
 
+import base64
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import requests
 
@@ -219,6 +221,45 @@ class GitHubClient:
             if j.get("conclusion") not in (None, "success", "skipped")
         ]
         return ", ".join(names)
+
+    def read_source_cwl(self, ref: str) -> Optional[Tuple[str, bytes]]:
+        """Return (path, content) of the single .cwl in a PROCESSOR repo at `ref`,
+        or None when this lookup cannot see the repo's files at all.
+
+        Used before dispatch so a malformed CWL fails in seconds instead of after a
+        full build. Mirrors the launcher's own lookup exactly - `find . -maxdepth 2
+        -name '*.cwl'`, i.e. repo root or one directory down, and a refusal to guess
+        when there is not exactly one - so this never accepts a repo the pipeline
+        would later reject, or vice versa.
+
+        Reading a PUBLIC repo needs no token scope (the pipeline clones it publicly
+        too), so the dispatch token's Actions:write is enough and no Contents
+        permission is required.
+        """
+        resp = self._get(f"/git/trees/{ref}", params={"recursive": "1"})
+        tree = resp.json()
+        candidates = [
+            entry["path"]
+            for entry in tree.get("tree", [])
+            if entry.get("type") == "blob"
+            and entry.get("path", "").endswith(".cwl")
+            and entry["path"].count("/") <= 1
+        ]
+        if not candidates and tree.get("truncated"):
+            # A repo too large for one tree listing. Do not block the build on our
+            # own lookup limit; the launcher does the authoritative search.
+            return None
+        if len(candidates) != 1:
+            raise ArtifactError(
+                f"expected exactly one .cwl in {self._repo}@{ref} (repo root or one "
+                f"directory down), found {len(candidates)}"
+                + (f": {', '.join(sorted(candidates))}" if candidates else "")
+            )
+        path = candidates[0]
+        content = self._get(f"/contents/{path}", params={"ref": ref}).json()
+        if content.get("encoding") != "base64":
+            raise ArtifactError(f"could not read {path} from {self._repo}@{ref}")
+        return path, base64.b64decode(content.get("content", ""))
 
     def get_cwl_url(self, correlation_id: str, appear_timeout: int = 60) -> str:
         """Return the public download URL of the finalized CWL the run published.

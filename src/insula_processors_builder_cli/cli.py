@@ -22,7 +22,8 @@ from urllib.parse import urlparse
 
 from . import __version__, auth, config
 from .config import Settings
-from .errors import CliError
+from .cwlcheck import check_cwl
+from .errors import CliError, RunFailedError
 from .github import GitHubClient
 from .publish import fetch_cwl, publish_cwl
 
@@ -101,7 +102,8 @@ def _build_settings(args: argparse.Namespace) -> Settings:
     return settings
 
 
-def _validate_repo_url(url: str) -> None:
+def _repo_slug(url: str) -> str:
+    """'https://github.com/owner/repo(.git)' -> 'owner/repo'. Raises on anything else."""
     if not url.startswith("https://github.com/"):
         raise CliError("repo-url must be a public https://github.com/<owner>/<repo> URL")
     slug = url[len("https://github.com/"):].removesuffix(".git").rstrip("/")
@@ -109,6 +111,11 @@ def _validate_repo_url(url: str) -> None:
     # than after a full dispatch + wait ends in a confusing checkout 404.
     if slug.count("/") != 1 or not all(slug.split("/")):
         raise CliError("repo-url must be https://github.com/<owner>/<repo> (no extra path)")
+    return slug
+
+
+def _validate_repo_url(url: str) -> None:
+    _repo_slug(url)
 
 
 def _validate_url(url: str, what: str) -> None:
@@ -120,51 +127,57 @@ def _validate_url(url: str, what: str) -> None:
         raise CliError(f"{what} must be an http(s) URL, got: {url}")
 
 
-def _lint_cwl(cwl_bytes: bytes) -> None:
-    """Cheap client-side sanity check before deploying, so obvious CWL mistakes fail
-    locally instead of after a slow server-side rejection. Not a full validator; the
-    platform still validates on deploy."""
+def _run_cwl_checks(cwl_bytes: bytes, *, expect_image_token: bool) -> None:
+    """Run the structural checks and turn any finding into one CliError.
+
+    The platform rejects a bad CWL with an EMPTY 400 body (the reason stays in its
+    server logs), so these local checks are the only place a user can be told what
+    is actually wrong. See cwlcheck for the rule-by-rule mapping to the platform.
+    """
     try:
         text = cwl_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise CliError(f"CWL is not valid UTF-8: {exc}") from exc
-    problems = []
-    if text.count("class: Workflow") != 1:
-        problems.append("exactly one 'class: Workflow' is required")
-    if text.count("class: CommandLineTool") != 1:
-        problems.append("exactly one 'class: CommandLineTool' is required")
-    if "dockerPull" not in text:
-        problems.append("a DockerRequirement.dockerPull is required")
-    if "__IMAGE__" in text:
-        problems.append("the __IMAGE__ token is still present (image was not injected)")
+    problems = check_cwl(text, expect_image_token=expect_image_token)
     if problems:
-        raise CliError("CWL failed local checks: " + "; ".join(problems))
+        raise CliError("CWL failed local checks:\n  - " + "\n  - ".join(problems))
+
+
+def _lint_cwl(cwl_bytes: bytes) -> None:
+    """Check a pipeline-FINALIZED CWL before deploying it: the `__IMAGE__` token must
+    be gone (the pipeline injected the published image)."""
+    _run_cwl_checks(cwl_bytes, expect_image_token=False)
 
 
 def _validate_cwl_source(cwl_bytes: bytes) -> None:
-    """Structural check for an AUTHOR's local .cwl BEFORE building: one Workflow, one
-    CommandLineTool, a dockerPull, and exactly one `__IMAGE__` token still present.
-    Unlike `_lint_cwl` (which runs post-build and requires the token to be GONE),
-    this expects the token, since the pipeline injects the image later."""
+    """Check an AUTHOR's local .cwl BEFORE building: the `__IMAGE__` token must still
+    be there, since the pipeline injects the image later."""
+    _run_cwl_checks(cwl_bytes, expect_image_token=True)
+
+
+def _check_source_repo_cwl(github_token: str, repo_url: str, ref: str) -> None:
+    """Read the .cwl straight from the processor repo and check it BEFORE dispatch.
+
+    The repo URL and ref are already known here (they are the dispatch inputs), so
+    this costs two API calls against a public repo. A finding stops the run before a
+    build is spent on it.
+    """
+    slug = _repo_slug(repo_url)
+    client = GitHubClient(github_token, slug)
     try:
-        text = cwl_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise CliError(f"CWL is not valid UTF-8: {exc}") from exc
-    problems = []
-    if text.count("class: Workflow") != 1:
-        problems.append("exactly one 'class: Workflow' is required")
-    if text.count("class: CommandLineTool") != 1:
-        problems.append("exactly one 'class: CommandLineTool' is required")
-    if "dockerPull" not in text:
-        problems.append("a DockerRequirement.dockerPull is required")
-    tokens = text.count("__IMAGE__")
-    if tokens != 1:
-        problems.append(
-            f"exactly one __IMAGE__ token is required (found {tokens}); the pipeline "
-            "injects the published image there"
-        )
-    if problems:
-        raise CliError("CWL failed local checks: " + "; ".join(problems))
+        found = client.read_source_cwl(ref)
+    except RunFailedError as exc:
+        raise CliError(
+            f"could not read {slug}@{ref} ({exc}); the processor repo must be public "
+            "and the ref must exist"
+        ) from exc
+    if found is None:
+        _log(f"warning: could not list {slug}@{ref}; skipping the pre-build CWL check")
+        return
+    path, content = found
+    _log(f"Checking {path} from {slug}@{ref} ...")
+    _validate_cwl_source(content)
+    _log(f"{path} passed the local CWL checks.")
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -293,6 +306,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
     api_token = None
     if not no_publish:
         api_token = _resolve_api_token(args)
+
+    # Check the CWL in the processor repo BEFORE dispatching: a malformed one fails
+    # the deploy at the very end, after a full build/scan/publish cycle, and the
+    # platform's rejection carries no reason. Seconds here save that whole round trip.
+    _check_source_repo_cwl(github_token, args.repo_url, args.ref)
 
     client = GitHubClient(github_token, settings.pipeline_repo)
     cwl_url = _dispatch_and_collect(client, settings, args)
