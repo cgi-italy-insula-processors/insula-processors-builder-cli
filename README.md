@@ -216,7 +216,10 @@ What is checked, mirroring the platform's own rules:
 - exactly one `Workflow` and one `CommandLineTool` in `$graph`, both with an `id`
 - exactly one step, whose `run` references the CommandLineTool id
 - `DockerRequirement.dockerPull` present, and still the bare `__IMAGE__` token
-  before a build (the pipeline injects the published image there)
+  before a build (the pipeline injects the published image there), appearing exactly
+  once across the CWL's keys and values - the pipeline substitutes globally, so a
+  second occurrence in a real value would receive the image reference too. A comment
+  that merely names the token is not counted
 - only the supported CommandLineTool requirements (`DockerRequirement`,
   `ResourceRequirement`, `NetworkAccess`, `EnvVarRequirement`,
   `InitialWorkDirRequirement`), each `InitialWorkDirRequirement` Directory carrying a

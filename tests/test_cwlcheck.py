@@ -147,6 +147,24 @@ def test_image_token_expectations_are_direction_specific():
     assert any("exactly one __IMAGE__" in p for p in check_cwl(_VALID, expect_image_token=True))
 
 
+def test_a_comment_naming_the_token_is_not_counted():
+    # The scaffolded header documents the token by name. Only keys and values are
+    # counted, because only those receive the finalize step's global substitution.
+    comment = "# dockerPull carries the __IMAGE__ token until the pipeline fills it in.\n"
+    author = _VALID.replace("reg/eopaas/eopaas/tiny:abc12345", "__IMAGE__")
+    assert check_cwl(comment + author, expect_image_token=True) == []
+    assert check_cwl(comment + _VALID, expect_image_token=False) == []
+
+
+def test_a_stray_token_in_a_value_is_counted():
+    # A second token in a real value would have the published image reference
+    # injected into it too, so it must still fail.
+    author = _VALID.replace("reg/eopaas/eopaas/tiny:abc12345", "__IMAGE__")
+    stray = author.replace("baseCommand: run.sh", "baseCommand: run.sh --tag __IMAGE__")
+    problems = check_cwl(stray, expect_image_token=True)
+    assert any("exactly one __IMAGE__" in p and "found 2" in p for p in problems)
+
+
 def test_dockerpull_must_be_the_bare_token_before_the_build():
     # A hardcoded image would smuggle an unscanned reference past the pipeline,
     # which fails the run at finalize_cwl; catch it locally instead.

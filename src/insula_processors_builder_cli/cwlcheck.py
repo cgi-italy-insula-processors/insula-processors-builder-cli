@@ -87,7 +87,7 @@ def check_cwl(text: str, *, expect_image_token: bool) -> List[str]:
         return problems
 
     pair = _find_workflow_and_tool(document, problems)
-    _check_image_token(text, expect_image_token, problems)
+    _check_image_token(document, expect_image_token, problems)
     if pair is None:
         return problems
     workflow, tool = pair
@@ -136,15 +136,35 @@ def _find_workflow_and_tool(
     return workflows[0], tools[0]
 
 
-def _check_image_token(text: str, expect_image_token: bool, problems: List[str]) -> None:
-    count = text.count(IMAGE_TOKEN)
+def _check_image_token(document: Dict[str, Any], expect_image_token: bool, problems: List[str]) -> None:
+    count = _count_image_tokens(document)
     if expect_image_token and count != 1:
         problems.append(
-            f"exactly one {IMAGE_TOKEN} token is required (found {count}); the pipeline "
-            "injects the published image there"
+            f"exactly one {IMAGE_TOKEN} token is required in the CWL's keys and values "
+            f"(found {count}); the pipeline injects the published image there. A comment "
+            "that merely names the token does not count"
         )
     if not expect_image_token and count:
         problems.append(f"the {IMAGE_TOKEN} token is still present (image was not injected)")
+
+
+def _count_image_tokens(node: Any) -> int:
+    """Occurrences of IMAGE_TOKEN in the PARSED document's keys and scalar values.
+
+    Counting the parsed document rather than the raw text is deliberate. The
+    launcher's finalize step substitutes the token with `sed ... g`, so every
+    occurrence in a real key or value receives the published image reference and a
+    stray one is a genuine defect worth reporting. A YAML comment is not part of
+    the document: the same global sed rewrites it harmlessly, and a header comment
+    that documents the token is not a reason to reject the package.
+    """
+    if isinstance(node, str):
+        return node.count(IMAGE_TOKEN)
+    if isinstance(node, dict):
+        return sum(_count_image_tokens(k) + _count_image_tokens(v) for k, v in node.items())
+    if isinstance(node, list):
+        return sum(_count_image_tokens(item) for item in node)
+    return 0
 
 
 def _check_description(workflow: Dict[str, Any], problems: List[str]) -> None:
