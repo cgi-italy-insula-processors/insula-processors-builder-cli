@@ -186,6 +186,9 @@ def test_unusable_documents_are_reported(text):
 
 
 _SCATTER = _VALID.replace(
+    "- class: Workflow\n  id: tiny\n",
+    "- class: Workflow\n  id: tiny\n  requirements:\n  - class: ScatterFeatureRequirement\n",
+).replace(
     "    catalogue:\n      type: Directory\n    threshold",
     "    catalogue:\n      type: Directory[]\n    threshold",
 ).replace(
@@ -216,3 +219,39 @@ def test_scatter_requires_array_workflow_outputs():
 def test_unsupported_scatter_method_is_rejected():
     problems = _check(_SCATTER.replace("scatterMethod: dotproduct", "scatterMethod: nested_crossproduct"))
     assert any("scatterMethod must be one of dotproduct" in p for p in problems)
+
+
+# The four rules below exist to prevent a bare HTTP 500, not a 400: the platform
+# does not validate these shapes, it casts them.
+
+
+def test_scatter_without_the_workflow_requirement_is_rejected():
+    problems = _check(_SCATTER.replace("  requirements:\n  - class: ScatterFeatureRequirement\n", ""))
+    assert any("does not declare 'ScatterFeatureRequirement'" in p for p in problems)
+
+
+def test_the_workflow_requirement_without_step_scatter_is_rejected():
+    problems = _check(
+        _SCATTER.replace("\n      scatter: catalogue\n      scatterMethod: dotproduct", "")
+    )
+    assert any("has no 'scatter'" in p for p in problems)
+
+
+def test_array_command_line_tool_output_is_rejected():
+    problems = _check(
+        _SCATTER.replace(
+            "  outputs:\n    result:\n      type: Directory\n      outputBinding",
+            "  outputs:\n    result:\n      type: Directory[]\n      outputBinding",
+        )
+    )
+    assert any("casts every CommandLineTool output type to a scalar" in p for p in problems)
+
+
+def test_array_workflow_output_without_fanout_is_rejected():
+    problems = _check(
+        _VALID.replace(
+            "    result:\n      type: Directory\n      outputSource",
+            "    result:\n      type: Directory[]\n      outputSource",
+        )
+    )
+    assert any("this is not a fan-out package" in p for p in problems)

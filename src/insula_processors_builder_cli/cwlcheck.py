@@ -6,6 +6,11 @@ bad CWL with a BODILESS HTTP 400 - the reason is only in its server logs - so th
 user's single chance of learning WHY is here, on their own machine, before the
 deploy POST and ideally before a full pipeline run.
 
+Worse than the 400s are the shapes the platform does not validate at all but casts
+blindly: those raise an unmapped ClassCastException or NullPointerException and come
+back as a BODILESS HTTP 500. Rules below that exist to prevent a 500 rather than a
+400 say so, and name the cast that would throw.
+
 Every rule below is transcribed from that server-side code, not invented. Keep the
 comments naming the source so a drift is traceable. Rules that depend on platform
 state (a duplicate service name, an unknown user mount) are NOT checked here: they
@@ -43,6 +48,10 @@ CWL_TYPES = (
 
 # CwlValidator.SUPPORTED_SCATTER_METHODS.
 SUPPORTED_SCATTER_METHODS = ("dotproduct",)
+
+# CwlParsingUtility.isScatter looks for this on the WORKFLOW, and nowhere else:
+# the step's `scatter` key does not enter that decision.
+SCATTER_FEATURE_REQUIREMENT = "ScatterFeatureRequirement"
 
 IMAGE_TOKEN = "__IMAGE__"
 
@@ -96,8 +105,10 @@ def check_cwl(text: str, *, expect_image_token: bool) -> List[str]:
     _check_requirements(tool, expect_image_token, problems)
     step = _check_step(workflow, tool, problems)
     _check_inputs(workflow, tool, step, problems)
-    _check_outputs(workflow, tool, step, problems)
-    _check_scatter(workflow, step, problems)
+    declares_scatter = _declares_scatter_feature(workflow)
+    is_fanout = declares_scatter or bool(step and step.get("scatter"))
+    _check_outputs(workflow, tool, step, is_fanout, problems)
+    _check_scatter(workflow, step, declares_scatter, problems)
     return problems
 
 
@@ -310,10 +321,16 @@ def _check_outputs(
     workflow: Dict[str, Any],
     tool: Dict[str, Any],
     step: Optional[Dict[str, Any]],
+    is_fanout: bool,
     problems: List[str],
 ) -> None:
     """CwlValidator.outputsMatch: every tool output reaches a Workflow output, and
-    only File/Directory outputs are supported."""
+    only File/Directory outputs are supported.
+
+    That method also casts both sides' types. The CommandLineTool side is always
+    cast to a scalar CWLType, and the Workflow side only becomes an ArraySchema on
+    the scatter path, so an array on the wrong side is a 500, not a 400.
+    """
     workflow_outputs = _as_map(workflow.get("outputs"))
     tool_outputs = _as_map(tool.get("outputs"))
     step_outputs = [_identifier(o) for o in (step.get("out") or []) if step] if step else []
@@ -325,7 +342,14 @@ def _check_outputs(
 
     for name, parameter in tool_outputs.items():
         output_type = _describe_type(parameter, f"CommandLineTool output '{name}'", problems)
-        if output_type and output_type.rstrip("[]") not in SUPPORTED_OUTPUT_TYPES:
+        if output_type and output_type.endswith("[]"):
+            problems.append(
+                f"CommandLineTool output '{name}' is '{output_type}'; the platform casts every "
+                "CommandLineTool output type to a scalar and an array there fails the deploy "
+                "with a bare HTTP 500. Under scatter the array belongs on the Workflow output, "
+                "not here"
+            )
+        elif output_type and output_type not in SUPPORTED_OUTPUT_TYPES:
             problems.append(
                 f"CommandLineTool output '{name}' is '{output_type}'; outputs must be "
                 + " or ".join(SUPPORTED_OUTPUT_TYPES)
@@ -338,14 +362,64 @@ def _check_outputs(
                 "('outputSource: <step>/" + name + "')"
             )
 
+    if is_fanout:
+        # The array Workflow outputs a fan-out needs are checked in _check_scatter.
+        return
+    for name, parameter in workflow_outputs.items():
+        output_type = _describe_type(parameter, f"Workflow output '{name}'", problems)
+        if output_type and output_type.endswith("[]"):
+            problems.append(
+                f"Workflow output '{name}' is '{output_type}' but this is not a fan-out package "
+                "(no step 'scatter', no ScatterFeatureRequirement); off the scatter path the "
+                "platform casts a Workflow output type to a scalar and the deploy fails with a "
+                "bare HTTP 500"
+            )
+
+
+def _declares_scatter_feature(workflow: Dict[str, Any]) -> bool:
+    """CwlParsingUtility.isScatter: fan-out is detected by this requirement alone."""
+    return SCATTER_FEATURE_REQUIREMENT in _requirement_names(workflow.get("requirements"))
+
+
+def _requirement_names(node: Any) -> List[str]:
+    """Requirement class names, from either the mapping or the list form."""
+    if isinstance(node, dict):
+        return [name for name in node if isinstance(name, str)]
+    if isinstance(node, list):
+        return [item["class"] for item in node if isinstance(item, dict) and isinstance(item.get("class"), str)]
+    return []
+
 
 def _check_scatter(
-    workflow: Dict[str, Any], step: Optional[Dict[str, Any]], problems: List[str]
+    workflow: Dict[str, Any], step: Optional[Dict[str, Any]], declares_scatter: bool, problems: List[str]
 ) -> None:
     """CwlValidator.validateScatterStep: dotproduct only, array scatter input, all
-    Workflow outputs arrays."""
-    if step is None or not step.get("scatter"):
+    Workflow outputs arrays.
+
+    Guarded by CwlParsingUtility.isScatter, which reads ONLY the Workflow's
+    ScatterFeatureRequirement. The requirement and the step's `scatter` must
+    therefore agree: with the requirement missing the array Workflow outputs reach
+    a scalar cast, and with it present but no `scatter` a null scatter id reaches
+    URI.create. Both are a bare HTTP 500, not a 400.
+    """
+    if step is None:
         return
+    if not step.get("scatter"):
+        if declares_scatter:
+            problems.append(
+                f"the Workflow declares '{SCATTER_FEATURE_REQUIREMENT}' but its step has no "
+                "'scatter'; the platform then reads a null scatter input and the deploy fails "
+                "with a bare HTTP 500. Add 'scatter'/'scatterMethod' to the step, or drop the "
+                "requirement"
+            )
+        return
+    if not declares_scatter:
+        problems.append(
+            f"the Workflow step uses 'scatter' but the Workflow does not declare "
+            f"'{SCATTER_FEATURE_REQUIREMENT}'; the platform detects fan-out by that requirement "
+            "alone and ignores 'scatter' without it, so the deploy fails with a bare HTTP 500. "
+            "Add 'requirements: [{class: " + SCATTER_FEATURE_REQUIREMENT + "}]' to the Workflow"
+        )
     method = step.get("scatterMethod")
     if method not in SUPPORTED_SCATTER_METHODS:
         problems.append(
